@@ -12,7 +12,7 @@ Real arrow-key/Enter navigation needs a program that owns the terminal directly,
 ./install.sh
 ```
 
-One script, works on both. Symlinks `agents-wizard.js` to `~/.local/bin/wizard` (override with `INSTALL_DIR=/some/dir ./install.sh`). Add that dir to `PATH` if the installer warns it's missing (it points at `~/.zshrc` or `~/.bashrc`/`~/.bash_profile` depending on your `$SHELL`), then run `wizard`.
+One script, works on both. Symlinks `agents-wizard.js` to `~/.local/bin/lsagents` (override with `INSTALL_DIR=/some/dir ./install.sh`). Add that dir to `PATH` if the installer warns it's missing (it points at `~/.zshrc` or `~/.bashrc`/`~/.bash_profile` depending on your `$SHELL`), then run `lsagents`.
 
 **Windows (PowerShell):**
 
@@ -20,7 +20,7 @@ One script, works on both. Symlinks `agents-wizard.js` to `~/.local/bin/wizard` 
 .\install.ps1
 ```
 
-Symlinks into `%USERPROFILE%\bin\wizard.cmd` (override with `.\install.ps1 -InstallDir "C:\tools\bin"`). Real symlinks need Developer Mode or an elevated shell — without either, it falls back to a `wizard.cmd` shim that calls `node` on the script directly, working the same either way. Add the install dir to `PATH` (`setx PATH "<dir>;%PATH%"`, then restart the terminal) if warned, then run `wizard`.
+Symlinks into `%USERPROFILE%\bin\lsagents.cmd` (override with `.\install.ps1 -InstallDir "C:\tools\bin"`). Real symlinks need Developer Mode or an elevated shell — without either, it falls back to a `lsagents.cmd` shim that calls `node` on the script directly, working the same either way. Add the install dir to `PATH` (`setx PATH "<dir>;%PATH%"`, then restart the terminal) if warned, then run `lsagents`.
 
 Without installing, run directly:
 
@@ -29,6 +29,14 @@ node agents-wizard.js
 # or, macOS/Linux only
 chmod +x agents-wizard.js && ./agents-wizard.js
 ```
+
+## Update
+
+```bash
+lsagents --update
+```
+
+Runs `git pull` in this checkout. Since the installed binary is a symlink (or, on Windows without Developer Mode/admin, a shim pointing straight at `agents-wizard.js` — see install.ps1), pulling is all that's needed; no need to re-run the installer. Equivalent to `git pull` directly from the `agents-wizard` directory. Doesn't require a TTY, so it works piped or scripted.
 
 ## Controls
 
@@ -75,3 +83,4 @@ Falls back to the manual template if `claude` CLI is missing, the `-p` call fail
 - `install.ps1` — Windows installer (symlink, or shim fallback without Developer Mode/admin)
 - `add_agent.md` — system prompt for the non-interactive auto-draft path
 - `finish_agent_interactive.md` — system prompt for the interactive finish path
+- `lsagents` — dev convenience shim (hardcoded path, not what `install.sh` produces)

@@ -1,0 +1,3 @@
+#!/bin/bash
+
+node /home/brian/Claude/Projects/agents-wizard/agents-wizard.js "$@"

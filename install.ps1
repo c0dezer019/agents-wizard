@@ -1,5 +1,5 @@
 # Installer for agents-wizard on Windows. Symlinks agents-wizard.js into a
-# bin dir on PATH so `wizard` runs from anywhere.
+# bin dir on PATH so `lsagents` runs from anywhere.
 #
 # Usage:
 #   .\install.ps1
@@ -7,7 +7,7 @@
 #
 # Creating a real symlink needs Developer Mode enabled or an elevated
 # (Run as Administrator) shell. Without either, this falls back to a
-# wizard.cmd shim that calls node on the target script — works the same,
+# lsagents.cmd shim that calls node on the target script — works the same,
 # just not a literal symlink.
 
 param(
@@ -28,8 +28,8 @@ if (-not (Test-Path $InstallDir)) {
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 }
 
-$LinkJs = Join-Path $InstallDir "wizard.js"
-$LinkCmd = Join-Path $InstallDir "wizard.cmd"
+$LinkJs = Join-Path $InstallDir "lsagents.js"
+$LinkCmd = Join-Path $InstallDir "lsagents.cmd"
 
 # Clean up whichever form exists from a previous install.
 Remove-Item -Force -ErrorAction SilentlyContinue $LinkJs
@@ -59,4 +59,4 @@ if ($pathEntries -notcontains $InstallDir) {
     Write-Host "(then restart your terminal)"
 }
 
-Write-Host "Run 'wizard' to start."
+Write-Host "Run 'lsagents' to start. 'lsagents --update' pulls the latest from the repo."

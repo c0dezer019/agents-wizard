@@ -499,11 +499,19 @@ function computeColumnWidths(rows, tabKey, termWidth) {
   return { nameWidth, sourceWidth, descWidth: Math.max(MIN_DESC_WIDTH, termWidth - fixed) };
 }
 
+// Tracked so the process-exit handler below (which normally guarantees the
+// terminal isn't left in alt-screen/hidden-cursor state no matter how the
+// TUI exits) doesn't fire for non-TUI codepaths like `--update`, which never
+// touch the screen at all and may be piped/redirected — writing raw escape
+// codes into a non-terminal stdout would corrupt that output.
+let inAltScreen = false;
 function enterAltScreen() {
   process.stdout.write('\x1B[?1049h\x1B[?25l');
+  inAltScreen = true;
 }
 function exitAltScreen() {
   process.stdout.write('\x1B[?25h\x1B[?1049l');
+  inAltScreen = false;
 }
 function setRaw(enabled) {
   if (!process.stdin.isTTY) return;
@@ -1602,6 +1610,27 @@ async function listLoop() {
   }
 }
 
+// `lsagents --update` — pulls this checkout to the latest repo HEAD. Since
+// the installed binary is a symlink (or, on Windows without Developer
+// Mode/admin, a shim pointing straight at this file — see install.ps1), a
+// plain `git pull` in place is all that's needed for the change to take
+// effect; no re-linking required. Doesn't touch the TUI/TTY machinery at
+// all, so it works fine piped, in scripts, cron, etc.
+function runUpdate() {
+  const repoDir = __dirname;
+  if (!fs.existsSync(path.join(repoDir, '.git'))) {
+    console.error(`error: ${repoDir} is not a git checkout (no .git found) — can't update.`);
+    process.exit(1);
+  }
+  console.log(`Updating agents-wizard in ${repoDir}...`);
+  const res = spawnSync('git', ['-C', repoDir, 'pull'], { stdio: 'inherit' });
+  if (res.error) {
+    console.error(`error: failed to run git: ${res.error.message}`);
+    process.exit(1);
+  }
+  process.exit(res.status ?? 0);
+}
+
 async function main() {
   if (!process.stdin.isTTY) {
     console.error('agents-wizard needs an interactive terminal (TTY). Run it directly, not piped.');
@@ -1633,7 +1662,7 @@ process.on('exit', () => {
   try {
     setRaw(false);
   } catch {}
-  process.stdout.write('\x1B[?25h\x1B[?1049l');
+  if (inAltScreen) process.stdout.write('\x1B[?25h\x1B[?1049l');
 });
 
 module.exports = {
@@ -1658,12 +1687,16 @@ module.exports = {
 };
 
 if (require.main === module) {
-  main().catch((err) => {
-    try {
-      exitAltScreen();
-      setRaw(false);
-    } catch {}
-    console.error(err);
-    process.exit(1);
-  });
+  if (process.argv.includes('--update')) {
+    runUpdate();
+  } else {
+    main().catch((err) => {
+      try {
+        exitAltScreen();
+        setRaw(false);
+      } catch {}
+      console.error(err);
+      process.exit(1);
+    });
+  }
 }

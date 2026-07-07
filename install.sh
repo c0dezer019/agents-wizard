@@ -1,12 +1,12 @@
 #!/bin/bash
 # Installer for agents-wizard. Symlinks agents-wizard.js into a bin dir on
-# PATH so `wizard` runs from anywhere.
+# PATH so `lsagents` runs from anywhere.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGET="$SCRIPT_DIR/agents-wizard.js"
 BIN_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
-LINK="$BIN_DIR/wizard"
+LINK="$BIN_DIR/lsagents"
 
 if [ ! -f "$TARGET" ]; then
   echo "error: agents-wizard.js not found in $SCRIPT_DIR" >&2
@@ -33,4 +33,4 @@ case ":$PATH:" in
     ;;
 esac
 
-echo "Run 'wizard' to start."
+echo "Run 'lsagents' to start. 'lsagents --update' pulls the latest from the repo."
