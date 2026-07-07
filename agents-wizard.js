@@ -88,12 +88,12 @@
  *             next 'b' from cwd goes to the list, not back into it.
  *             Writable in cwd and bookmark-project.
  *   User    — ~/.claude/agents/ (personal, all projects). Writable.
- *   Plugin  — always empty. This used to scan every agents/ directory under
- *             ~/.claude/plugins/cache/, but that directory keeps orphaned
- *             copies from previous plugin versions on disk for ~7 days after
- *             an update, so it isn't a reliable "what's actually installed"
- *             source — excluded rather than shown unreliably. Still
- *             read-only (nothing here would be editable anyway).
+ *   Plugin  — every agents/ directory under ~/.claude/plugins/marketplaces/
+ *             (see findPluginAgentDirs), deduped when the same agent is
+ *             reachable via more than one registered marketplace (same
+ *             name + identical content — see dedupeAgents). Never touches
+ *             ~/.claude/plugins/cache/. Read-only (nothing here would be
+ *             editable anyway).
  */
 
 const fs = require('fs');
@@ -231,23 +231,11 @@ function loadAgentFile(filePath) {
   };
 }
 
-// Plugin cache dirs keep the previous version of a plugin on disk for ~7 days
-// after an update (see Claude Code docs on plugin caching) — an "orphaned"
-// copy that a plain filesystem walk can't distinguish from the current one.
-// Same name + identical file content is the practical signal that two hits
-// are the same agent from two version dirs, not two distinct agents that
-// happen to share a name. Keep whichever copy has the newest mtime.
-function dedupeAgents(list) {
-  const seen = new Map();
-  for (const a of list) {
-    const key = a.name + ' ' + a.raw;
-    const existing = seen.get(key);
-    if (!existing || a.mtimeMs > existing.mtimeMs) seen.set(key, a);
-  }
-  return Array.from(seen.values());
-}
-
-function findPluginAgentDirs(cacheRoot, maxDepth = 6) {
+// Plugin agents live at .claude/plugins/marketplaces/<marketplace>/<plugin>/agents/*.md
+// — arbitrary marketplace/plugin nesting above the agents/ dir itself, so this
+// walks looking for any directory named "agents" rather than assuming a fixed
+// depth.
+function findPluginAgentDirs(root, maxDepth = 6) {
   const found = [];
   function walk(dir, depth) {
     if (depth > maxDepth) return;
@@ -267,27 +255,58 @@ function findPluginAgentDirs(cacheRoot, maxDepth = 6) {
       }
     }
   }
-  walk(cacheRoot, 0);
+  walk(root, 0);
   return found;
+}
+
+// Display label for which plugin/marketplace a plugin-tab agent came from
+// -- e.g. "some-marketplace/some-plugin" -- so agents that collide on name
+// (real collisions, not the identical-content case dedupeAgents merges) are
+// distinguishable in the list instead of looking like an unexplained dupe.
+function pluginSourceLabel(filePath, root) {
+  const rel = path.relative(root, filePath);
+  const segments = rel.split(path.sep);
+  const agentsIdx = segments.lastIndexOf('agents');
+  const sourceSegments = agentsIdx > 0 ? segments.slice(0, agentsIdx) : segments.slice(0, -1);
+  return sourceSegments.join('/') || '(unknown)';
+}
+
+// A plugin can be reachable from more than one registered marketplace (e.g.
+// the same repo added under two marketplace names/aliases) -- that puts
+// byte-identical agent files at two different paths under marketplaces/.
+// Same name + identical file content is the signal that two hits are the
+// same installed agent surfaced twice, not two distinct agents that happen
+// to share a name (different content, same name, is left alone: that's a
+// real cross-plugin naming collision, not a duplicate). Keep newest mtime.
+function dedupeAgents(list) {
+  const seen = new Map();
+  for (const a of list) {
+    const key = a.name + '\u0000' + a.raw;
+    const existing = seen.get(key);
+    if (!existing || a.mtimeMs > existing.mtimeMs) seen.set(key, a);
+  }
+  return Array.from(seen.values());
 }
 
 function scanAll(cwd, projectAgentsDir) {
   const userDir = path.join(os.homedir(), '.claude', 'agents');
+  const pluginMarketplacesRoot = path.join(os.homedir(), '.claude', 'plugins', 'marketplaces');
 
   const project = listMdFiles(projectAgentsDir).map(loadAgentFile);
   const user = listMdFiles(userDir).map(loadAgentFile);
-
-  // Plugin agents are no longer scanned from ~/.claude/plugins/cache: that
-  // directory keeps orphaned copies from previous plugin versions on disk
-  // for ~7 days after an update (see findPluginAgentDirs/dedupeAgents),
-  // which made it an unreliable "what's actually installed" source. Always
-  // empty for now.
-  const plugin = [];
+  const pluginRaw = findPluginAgentDirs(pluginMarketplacesRoot)
+    .flatMap((dir) => listMdFiles(dir))
+    .map((f) => ({ ...loadAgentFile(f), source: pluginSourceLabel(f, pluginMarketplacesRoot) }));
+  // Dedupe keys on name+content only (source deliberately excluded) -- the
+  // whole point is collapsing the same agent reachable from two
+  // marketplaces into one row. Whichever copy has the newer mtime wins, so
+  // its source is what gets displayed.
+  const plugin = dedupeAgents(pluginRaw).sort((a, b) => a.name.localeCompare(b.name));
 
   return {
     project: { dir: projectAgentsDir, agents: project, writable: true },
     user: { dir: userDir, agents: user, writable: true },
-    plugin: { dir: null, agents: plugin, writable: false },
+    plugin: { dir: pluginMarketplacesRoot, agents: plugin, writable: false },
   };
 }
 
@@ -304,6 +323,33 @@ const clearScreen = () => `${ESC}2J${ESC}H`;
 function truncate(s, n) {
   s = s || '';
   return s.length > n ? s.slice(0, n - 1) + '…' : s;
+}
+
+// Column widths for the agent list re-derive from the live terminal width on
+// every render (renderList is re-invoked on every keypress and on resize --
+// see triggerRepaint/RESIZE_KEY), so name/source shrink or grow with the
+// window instead of being fixed truncation lengths that clip on a narrow
+// terminal or waste space on a wide one. Name/source cap out once they're
+// wide enough to fit real content (MAX_NAME_WIDTH/MAX_SOURCE_WIDTH) so one
+// unusually long entry can't starve the description column; whatever's left
+// after those plus fixed gaps/markers goes to description, with a floor so
+// it never goes negative on a tiny terminal.
+const MIN_DESC_WIDTH = 10;
+const MAX_NAME_WIDTH = 32;
+const MAX_SOURCE_WIDTH = 30;
+
+function computeColumnWidths(rows, tabKey, termWidth) {
+  const realRows = rows.filter((r) => !r.virtual);
+  const nameWidth = Math.min(MAX_NAME_WIDTH, Math.max(4, ...realRows.map((r) => r.name.length)));
+
+  if (tabKey !== 'plugin') {
+    const fixed = 2 /* indent */ + nameWidth + 2 /* gap */ + 2 /* '— ' */;
+    return { nameWidth, descWidth: Math.max(MIN_DESC_WIDTH, termWidth - fixed) };
+  }
+
+  const sourceWidth = Math.min(MAX_SOURCE_WIDTH, Math.max(4, ...realRows.map((r) => (r.source || '').length)));
+  const fixed = 2 /* indent */ + nameWidth + 1 /* gap */ + sourceWidth + 1 /* gap */ + 2 /* '— ' */;
+  return { nameWidth, sourceWidth, descWidth: Math.max(MIN_DESC_WIDTH, termWidth - fixed) };
 }
 
 function enterAltScreen() {
@@ -434,12 +480,24 @@ function renderList(data, tabIndex, selIndex, scrollOffset, viewHeight, status, 
   if (rows.length === 0) {
     out += dim('  (no agents found in this scope)') + '\n';
   } else {
+    const termWidth = process.stdout.columns || 80;
+    const cols = computeColumnWidths(rows, tabKey, termWidth);
     const visible = rows.slice(scrollOffset, scrollOffset + viewHeight);
     visible.forEach((row, i) => {
       const absoluteIndex = scrollOffset + i;
+      // Plugin tab gets an extra source column (marketplace/plugin) since
+      // the same agent name can legitimately come from two different
+      // plugins -- dedupeAgents only collapses identical files, not name
+      // collisions, so those need to stay visually distinguishable. Column
+      // widths come from computeColumnWidths, which re-measures the
+      // terminal on every render.
       const label = row.virtual
         ? row.label
-        : `${row.name}  ${dim('— ' + truncate(row.description, 60))}`;
+        : tabKey === 'plugin'
+          ? `${truncate(row.name, cols.nameWidth).padEnd(cols.nameWidth)} ${dim(
+              truncate(row.source || '(unknown)', cols.sourceWidth).padEnd(cols.sourceWidth)
+            )} ${dim('— ' + truncate(row.description, cols.descWidth))}`
+          : `${truncate(row.name, cols.nameWidth).padEnd(cols.nameWidth)}  ${dim('— ' + truncate(row.description, cols.descWidth))}`;
       const line = `  ${label}`;
       out += (absoluteIndex === selIndex ? reverse(line) : line) + '\n';
     });
@@ -1234,6 +1292,8 @@ module.exports = {
   findPluginAgentDirs,
   dedupeAgents,
   computeViewport,
+  computeColumnWidths,
+  truncate,
   scanAll,
   expandHome,
   configFile,
