@@ -1,163 +1,13 @@
 #!/usr/bin/env node
 'use strict';
 
-/**
- * Agent Wizard — standalone terminal UI for managing Claude Code subagents.
- *
- * Real arrow-key / Enter navigation is only possible as a program that owns
- * the terminal directly. Claude Code's own slash commands/skills are just
- * text expanded into the conversation — they can't capture raw keystrokes
- * or draw into Claude Code's UI. So this is a plain Node script you run
- * yourself:
- *
- *   node agent-wizard.js
- *   (or: chmod +x agent-wizard.js && ./agent-wizard.js)
- *
- * No npm dependencies — uses only Node's built-in fs/path/os/readline/child_process.
- *
- * Creating an agent ("+ New agent") asks for role, seniority, and general
- * tasks instead of a raw description, then drafts a trigger description with
- * one `claude -p` call (tool use disabled via --tools "", so it's a pure
- * text-drafting call with nothing to hang on for permission). Once that
- * description exists, you pick how to finish the file:
- *   - Auto-draft with claude -p  — a second, also-tool-disabled `claude -p`
- *     call, using add_agent.md (in this same directory) as its system prompt
- *     via --system-prompt-file, drafting the complete file non-interactively.
- *   - Open interactive claude session — launches a real, interactive `claude`
- *     session (your terminal, full tool access, no --tools/-p restriction)
- *     with finish_agent_interactive.md as its system prompt and the same
- *     name/description/role/seniority/tasks as its opening message, so you
- *     can go back and forth before it writes the finished file itself.
- *   - Skip — writes the manual template directly.
- * Falls back to the manual template if the `claude` CLI is missing, the -p
- * call fails, or an interactive session ends without writing the file.
- * Either way, $EDITOR still opens afterward so you can review/adjust before
- * it's final.
- *
- * Every screen opens with a ✦-logo'd, bordered header box (see
- * renderHeaderBox) — project/user directories currently in view, plus up to
- * the last 4 entries from this tool's own RELEASE_NOTES.md, read once at
- * startup and not re-read on every repaint (see getRecentReleaseNotes). Same
- * idea as Claude Code's own startup banner, just persistent across every
- * frame instead of a one-time splash, since this TUI already clears and
- * redraws the whole screen on every keypress anyway (see
- * clearScreen/renderList).
- *
- * Controls:
- *   ← / →   switch tabs (Project / User / Plugin)
- *   ↑ / ↓   move selection (list scrolls to keep the selection visible)
- *   Enter   on an agent: launch it — runs `claude --agent <name>` as a real,
- *           foreground session until you exit it; on "+ New agent": create
- *           one; in Project/bookmarks mode: enter that project's agent list
- *   v       view the selected agent's raw file (any tab, including Plugin)
- *   c       copy the selected agent's file into another project's
- *           .claude/agents/ (any tab, including Plugin — not the Project
- *           bookmarks-list itself, whose rows aren't agents). Prompts for a
- *           destination (cwd, a bookmark, or a typed path) and confirms
- *           before overwriting a same-named file already there.
- *   e       edit the selected agent with $EDITOR (Project/User only)
- *   x       delete the selected agent, after retyping its name to confirm
- *           (Project/User only). On a tracked plugin agent shown in User,
- *           this untracks instead — the plugin's file is never touched.
- *   u       (Plugin tab only) track/untrack the selected agent into the
- *           User tab, for editing a plugin you own in place — see Scopes
- *           below
- *   b       (Project tab only) jump between cwd and bookmarks — see below
- *   Esc     (Project tab, inside an entered bookmark project) back to the
- *           bookmarks list
- *   d       (Project tab, bookmarks list only) remove the highlighted bookmark
- *   /       search across every scope at once — Project (cwd + every
- *           bookmarked project), User, and Plugin — matching the query
- *           against agent name, description, or its project/plugin label.
- *           Enter launches the highlighted result; Tab opens a menu for it
- *           (Launch/View/Edit/Delete/Copy, or Launch/View/Track/Copy for a
- *           not-yet-tracked plugin result — not bare v/e/x/u/c or Ctrl+letter,
- *           since this is a live text field and letters must stay free for
- *           typing the query, and Ctrl combos aren't reliable either, e.g.
- *           Ctrl+V is commonly claimed by the terminal/OS as Paste). Works
- *           from any tab.
- *   ?       show help on writing a good agent (name/description/tools/
- *           model/system-prompt guidance) — works from any tab
- *   q       quit (from the main list)
- *   Esc/q   back (from menus/viewer/help)
- *
- * Scopes:
- *   Project — three states, not two. Getting this wrong once already caused
- *             a bug (entering a bookmark used to overwrite the "current
- *             directory" itself, so there was no way back to where you
- *             actually launched the script from), so the rule is spelled
- *             out in full:
- *               cwd            — <cwd>/.claude/agents/, cwd being wherever
- *                                you launched this script from. Captured
- *                                once at startup and never overwritten by
- *                                anything that happens in bookmarks mode.
- *                                No walking up to parent directories either
- *                                (silently matched ~/.claude/agents when run
- *                                from deep inside $HOME with no closer
- *                                project folder — same dir as User, very
- *                                confusing).
- *               bookmarks      — a flat list of remembered project folders
- *                                (~/.claude/agent-wizard/config.json).
- *                                Enter on one moves to bookmark-project
- *                                (below). 'd' removes the highlighted
- *                                bookmark (just the shortcut, not the
- *                                folder) — no confirmation, it's non-
- *                                destructive.
- *               bookmark-project — showing one specific bookmarked project's
- *                                agents (same writable list as cwd mode,
- *                                just a different directory). Esc goes back
- *                                to the bookmarks list. 'b' goes to cwd.
- *             'b' semantics tie these together: from cwd, 'b' resumes
- *             whichever bookmark-related state you last left — the specific
- *             project if you left via 'b' from inside it, or the plain list
- *             if you left via 'b' from the list itself. Backing all the way
- *             out to the list (whether by Esc then 'b', or 'd'-ing the
- *             remembered bookmark) forgets the remembered project, so the
- *             next 'b' from cwd goes to the list, not back into it.
- *             Writable in cwd and bookmark-project.
- *   User    — ~/.claude/agents/ (personal, all projects). Writable. Also
- *             shows any "tracked" plugin agents (below) mixed into the same
- *             list — they're real rows here, not a separate section, so
- *             they get the exact same Enter/v/e/x treatment.
- *   Plugin  — every agents/ directory under ~/.claude/plugins/marketplaces/
- *             (see findPluginAgentDirs), deduped when the same agent is
- *             reachable via more than one registered marketplace (same
- *             name + identical content — see dedupeAgents). Never touches
- *             ~/.claude/plugins/cache/. Read-only in this tab (e/x do
- *             nothing here) — but 'u' tracks/untracks the highlighted agent
- *             into the User tab (marked with a ★ here once tracked), for
- *             when you own that plugin/marketplace checkout yourself and
- *             want to edit it directly. Tracking only remembers the file
- *             path in config (~/.claude/agent-wizard/config.json,
- *             trackedPluginAgents) — it does NOT copy the file into
- *             ~/.claude/agents/, so editing a tracked agent from the User
- *             tab edits the plugin's real file in place. That's the point
- *             (no fork/copy step for someone actively developing the
- *             plugin), but it does mean it's not a safe thing to do to a
- *             plugin you don't own — untracking ('x' on the linked row, or
- *             'u' again from here) only forgets the pointer and never
- *             touches the file either way.
- */
-
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const readline = require('readline');
 const { spawnSync } = require('child_process');
 
-// Creating an agent drafts its description and full file content by shelling
-// out to `claude -p`, using this file as the system prompt for the main
-// generation call (via --system-prompt-file, not stdin — piping a file into
-// `claude -p "query" < file` makes the file part of the *user* turn, same as
-// `cat file | claude -p`, not a system prompt). Resolved from __dirname so it
-// works regardless of the cwd the wizard was launched from.
 const ADD_AGENT_PROMPT_FILE = path.join(__dirname, 'add_agent.md');
-// System prompt for the "open interactive claude session" finish path — a
-// different file from ADD_AGENT_PROMPT_FILE because the instructions differ
-// in kind, not just detail: that one tells claude to emit raw file content
-// and nothing else (captured from stdout in a -p call); this one tells
-// claude to have an actual back-and-forth with the user and write the file
-// itself with its Write tool once they're both happy with it.
 const ADD_AGENT_INTERACTIVE_PROMPT_FILE = path.join(__dirname, 'finish_agent_interactive.md');
 
 const TABS = ['project', 'user', 'plugin'];
@@ -194,35 +44,7 @@ function configFile() {
   return path.join(os.homedir(), '.claude', 'agent-wizard', 'config.json');
 }
 
-// Pre-rename config lived under 'agents-wizard' (plural). One-time migration:
-// if the new path doesn't exist yet but the old one does, copy it over so
-// existing bookmarks/trackedPluginAgents survive the rename. Leaves the old
-// file in place rather than deleting it, in case of rollback.
-function legacyConfigFile() {
-  return path.join(os.homedir(), '.claude', 'agents-wizard', 'config.json');
-}
-
-function migrateLegacyConfig() {
-  const target = configFile();
-  const legacy = legacyConfigFile();
-  try {
-    if (!fs.existsSync(target) && fs.existsSync(legacy)) {
-      fs.mkdirSync(path.dirname(target), { recursive: true });
-      fs.copyFileSync(legacy, target);
-    }
-  } catch {
-    // Best-effort; loadConfig's own try/catch handles a still-missing file.
-  }
-}
-
-// trackedPluginAgents: absolute file paths of plugin-tab agents the user has
-// chosen to surface (and make editable) in the User tab — see scanAll and
-// the 'u' key in listLoop. Deliberately just a list of paths, not copies of
-// the files themselves: the whole point is editing the plugin's own file in
-// place (for someone developing or forking their own plugin locally), not
-// forking content into ~/.claude/agents the way "+ New agent" does.
 function loadConfig() {
-  migrateLegacyConfig();
   try {
     const raw = fs.readFileSync(configFile(), 'utf8');
     const data = JSON.parse(raw);
@@ -255,14 +77,6 @@ function listMdFiles(dir) {
     .sort();
 }
 
-// YAML allows quoting a scalar value (`name: "foo"` and `name: 'foo'` both
-// mean the same as `name: foo`). Strip one matching pair of surrounding
-// quotes if present, so callers get the actual identifier rather than the
-// literal quote characters. Previously this parser only fed display text, so
-// leftover quotes were cosmetic at worst -- now agent.name is also passed
-// straight through to `claude --agent <name>`, where a quoted value like
-// `"a11y-remediation-specialist"` is a genuinely different (nonexistent)
-// agent name, not the one the user meant, and fails with "agent not found".
 function stripQuotes(s) {
   if (s.length >= 2) {
     const first = s[0];
@@ -274,10 +88,6 @@ function stripQuotes(s) {
   return s;
 }
 
-// Minimal top-level `key: value` frontmatter reader. Only pulls name/description
-// for display purposes — Edit/Create never round-trip through this parser, they
-// hand the raw file straight to $EDITOR, so there's no risk of this simplistic
-// parser mangling tools/model/hooks/etc.
 function parseFrontmatter(content) {
   const m = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
   if (!m) return { name: null, description: '', body: content };
@@ -298,7 +108,6 @@ function loadAgentFile(filePath) {
   try {
     mtimeMs = fs.statSync(filePath).mtimeMs;
   } catch {
-    // file vanished between listing and stat — leave mtimeMs at 0
   }
   return {
     name: fm.name || base,
@@ -309,10 +118,6 @@ function loadAgentFile(filePath) {
   };
 }
 
-// Plugin agents live at .claude/plugins/marketplaces/<marketplace>/<plugin>/agents/*.md
-// — arbitrary marketplace/plugin nesting above the agents/ dir itself, so this
-// walks looking for any directory named "agents" rather than assuming a fixed
-// depth.
 function findPluginAgentDirs(root, maxDepth = 6) {
   const found = [];
   function walk(dir, depth) {
@@ -337,10 +142,6 @@ function findPluginAgentDirs(root, maxDepth = 6) {
   return found;
 }
 
-// Display label for which plugin/marketplace a plugin-tab agent came from
-// -- e.g. "some-marketplace/some-plugin" -- so agents that collide on name
-// (real collisions, not the identical-content case dedupeAgents merges) are
-// distinguishable in the list instead of looking like an unexplained dupe.
 function pluginSourceLabel(filePath, root) {
   const rel = path.relative(root, filePath);
   const segments = rel.split(path.sep);
@@ -349,13 +150,6 @@ function pluginSourceLabel(filePath, root) {
   return sourceSegments.join('/') || '(unknown)';
 }
 
-// A plugin can be reachable from more than one registered marketplace (e.g.
-// the same repo added under two marketplace names/aliases) -- that puts
-// byte-identical agent files at two different paths under marketplaces/.
-// Same name + identical file content is the signal that two hits are the
-// same installed agent surfaced twice, not two distinct agents that happen
-// to share a name (different content, same name, is left alone: that's a
-// real cross-plugin naming collision, not a duplicate). Keep newest mtime.
 function dedupeAgents(list) {
   const seen = new Map();
   for (const a of list) {
@@ -366,9 +160,6 @@ function dedupeAgents(list) {
   return Array.from(seen.values());
 }
 
-// cfg is optional (defaults to no tracked agents) so existing callers/tests
-// that only care about project/user/plugin scanning don't need to know
-// about tracking at all.
 function scanAll(cwd, projectAgentsDir, cfg = { trackedPluginAgents: [] }) {
   const userDir = path.join(os.homedir(), '.claude', 'agents');
   const pluginMarketplacesRoot = path.join(os.homedir(), '.claude', 'plugins', 'marketplaces');
@@ -378,20 +169,8 @@ function scanAll(cwd, projectAgentsDir, cfg = { trackedPluginAgents: [] }) {
   const pluginRaw = findPluginAgentDirs(pluginMarketplacesRoot)
     .flatMap((dir) => listMdFiles(dir))
     .map((f) => ({ ...loadAgentFile(f), source: pluginSourceLabel(f, pluginMarketplacesRoot) }));
-  // Dedupe keys on name+content only (source deliberately excluded) -- the
-  // whole point is collapsing the same agent reachable from two
-  // marketplaces into one row. Whichever copy has the newer mtime wins, so
-  // its source is what gets displayed.
   const plugin = dedupeAgents(pluginRaw).sort((a, b) => a.name.localeCompare(b.name));
 
-  // Tracked plugin agents ride along in the User tab's own list (not a
-  // separate section) so they get the exact same Enter/v/e/x treatment any
-  // other User-tab row gets -- `linked: true` is only there so the 'x'
-  // handler in listLoop knows to untrack instead of deleting the file, and
-  // so renderList can show where the row actually lives on disk. A tracked
-  // path can go stale (plugin uninstalled, marketplace re-synced to a
-  // different copy after dedup) -- silently drop it rather than throwing,
-  // same tolerance listMdFiles already has for a missing directory.
   const linked = (cfg.trackedPluginAgents || [])
     .filter((filePath) => {
       try {
@@ -413,13 +192,6 @@ function scanAll(cwd, projectAgentsDir, cfg = { trackedPluginAgents: [] }) {
   };
 }
 
-// Search (/) flattens every scope the wizard knows about into one list, each
-// row tagged with a human "where" label — unlike the tab system, this needs
-// to show agents from bookmarked projects the user *isn't* currently
-// looking at, not just the active cwd/bookmark-project, so it re-scans every
-// bookmark root directly rather than reusing scanAll (which only knows about
-// whichever single project dir is "current"). writable mirrors what e/x
-// would do if you navigated to that row's own scope normally.
 function buildSearchIndex(cwd, cwdAgentsDir, cfg) {
   const entries = [];
 
@@ -431,7 +203,7 @@ function buildSearchIndex(cwd, cwdAgentsDir, cfg) {
 
   addProjectDir(cwdAgentsDir, `${path.basename(cwd)} (cwd)`, cwd);
   for (const root of cfg.bookmarks) {
-    if (path.resolve(root) === path.resolve(cwd)) continue; // cwd already added above
+    if (path.resolve(root) === path.resolve(cwd)) continue;
     addProjectDir(path.join(root, '.claude', 'agents'), path.basename(root), root);
   }
 
@@ -448,11 +220,6 @@ function buildSearchIndex(cwd, cwdAgentsDir, cfg) {
     entries.push({ ...agent, scopeKind: 'plugin', label: agent.source, root: null, writable: false });
   }
 
-  // Tracked (linked) plugin agents show up as User-tab rows here too, same
-  // as scanAll does for the main list — writable: true because editing one
-  // edits the real plugin file in place (see scanAll's comment), and
-  // `linked: true` so searchFlow's Tab/Delete action untracks rather than
-  // deleting that file.
   for (const filePath of cfg.trackedPluginAgents || []) {
     let isFile = false;
     try {
@@ -465,8 +232,6 @@ function buildSearchIndex(cwd, cwdAgentsDir, cfg) {
     entries.push({
       ...agent,
       scopeKind: 'user',
-      // scopeTag in renderSearch already renders "[user]" for this row, so
-      // the label only needs the "which plugin" part, not "User" again.
       label: `linked: ${pluginSourceLabel(filePath, pluginMarketplacesRoot)}`,
       root: null,
       writable: true,
@@ -477,10 +242,6 @@ function buildSearchIndex(cwd, cwdAgentsDir, cfg) {
   return entries;
 }
 
-// "type either a plugin, project, or partial agent name" — one query, checked
-// as a case-insensitive substring against all three: name, description, and
-// the row's project/plugin label, rather than needing a mode switch to pick
-// which field you're searching.
 function filterSearchIndex(entries, query) {
   const q = query.trim().toLowerCase();
   if (!q) return entries;
@@ -502,25 +263,130 @@ const bold = (s) => `${ESC}1m${s}${ESC}0m`;
 const dim = (s) => `${ESC}2m${s}${ESC}0m`;
 const clearScreen = () => `${ESC}2J${ESC}H`;
 
+function supportsUnicode() {
+  if (process.platform === 'win32') {
+    return Boolean(
+      process.env.WT_SESSION ||
+        process.env.CI ||
+        process.env.TERM_PROGRAM === 'vscode' ||
+        process.env.ConEmuTask === '{cmd::Cmder}' ||
+        process.env.TERM === 'xterm-256color' ||
+        process.env.TERM === 'alacritty'
+    );
+  }
+  return process.env.TERM !== 'linux';
+}
+const LOGO = supportsUnicode() ? '✦' : '*';
+
+// ---------------------------------------------------------------------------
+// Inline image logo (header box)
+// ---------------------------------------------------------------------------
+function detectImageProtocol() {
+  if (!process.stdout.isTTY) return null;
+  if (process.env.AGENT_WIZARD_NO_LOGO) return null;
+  if (process.env.TMUX || /screen/.test(process.env.TERM || '')) return null;
+  if (process.env.TERM === 'xterm-kitty' || process.env.KITTY_WINDOW_ID) return 'kitty';
+  if (
+    process.env.TERM_PROGRAM === 'iTerm.app' ||
+    process.env.TERM_PROGRAM === 'WezTerm' ||
+    process.env.TERM_PROGRAM === 'mintty' ||
+    process.env.KONSOLE_VERSION
+  ) {
+    return 'iterm';
+  }
+  return null;
+}
+
+const LOGO_PIXEL_WIDTH = 176;
+const LOGO_PIXEL_HEIGHT = 164;
+
+function loadLogoBase64(repoDir) {
+  try {
+    return fs.readFileSync(path.join(repoDir, 'assets', 'logo.png')).toString('base64');
+  } catch {
+    return null;
+  }
+}
+
+function itermImageEscape(base64, cols, rows) {
+  return `\x1B]1337;File=inline=1;width=${cols};height=${rows};preserveAspectRatio=1:${base64}\x07`;
+}
+
+function kittyImageEscape(base64, cols, rows) {
+  const CHUNK = 4096;
+  let out = '';
+  for (let i = 0; i < base64.length; i += CHUNK) {
+    const chunk = base64.slice(i, i + CHUNK);
+    const more = i + CHUNK < base64.length ? 1 : 0;
+    const controls = i === 0 ? `a=T,f=100,c=${cols},r=${rows},m=${more}` : `m=${more}`;
+    out += `\x1B_G${controls};${chunk}\x1B\\`;
+  }
+  return out;
+}
+
+function computeLogoGutter(imgRows, termWidth) {
+  const cols = Math.round(imgRows * 2 * (LOGO_PIXEL_WIDTH / LOGO_PIXEL_HEIGHT));
+  const clamped = Math.max(4, Math.min(cols, 24));
+  const minTextWidth = MIN_DESC_WIDTH + 10;
+  if (termWidth - clamped - 6 < minTextWidth) return 0;
+  return clamped;
+}
+
+// Save/restore cursor around an absolute-position draw, same trick
+// renderInlineLogoEscape (header box) already relies on — wherever the image
+// protocol leaves the cursor after drawing doesn't matter, since control
+// always returns to exactly where it was before this ran.
+function placedImageEscape(protocol, base64, cols, rows, row, col) {
+  const body = protocol === 'kitty' ? kittyImageEscape(base64, cols, rows) : itermImageEscape(base64, cols, rows);
+  return `${ESC}s${ESC}${row};${col}H${body}${ESC}u`;
+}
+
+function renderInlineLogoEscape(protocol, base64, cols, rows) {
+  return placedImageEscape(protocol, base64, cols, rows, 2, 3);
+}
+
+// ---------------------------------------------------------------------------
+// Inline image logo (agent-creation flow flourish)
+// ---------------------------------------------------------------------------
+// assets/spell.png (wizard casting) shows up at a random on-screen spot
+// during createFlow's prompts (see pickSpellSlot/createFlow) — one new
+// random spot per question, held fixed for that question's own redraws
+// (every keystroke repaints, so picking fresh per-frame would make it
+// jitter). Same capability check/fallback as the header logo: null
+// anywhere the image logo itself wouldn't show (see detectImageProtocol),
+// so this never shows up somewhere the header logo doesn't.
+const SPELL_PIXEL_WIDTH = 200;
+const SPELL_PIXEL_HEIGHT = 171;
+
+function loadSpellBase64(repoDir) {
+  try {
+    return fs.readFileSync(path.join(repoDir, 'assets', 'spell.png')).toString('base64');
+  } catch {
+    return null;
+  }
+}
+
+function pickSpellSlot(imageLogo, spellBase64) {
+  if (!imageLogo || !spellBase64) return null;
+  const termCols = process.stdout.columns || 80;
+  const termRows = process.stdout.rows || 24;
+  const rows = Math.max(4, Math.min(10, Math.floor(termRows * 0.35)));
+  const cols = Math.max(6, Math.min(termCols - 4, Math.round(rows * 2 * (SPELL_PIXEL_WIDTH / SPELL_PIXEL_HEIGHT))));
+  if (termRows - rows < 2 || termCols - cols < 2) return null;
+  const row = 1 + Math.floor(Math.random() * (termRows - rows - 1));
+  const col = 1 + Math.floor(Math.random() * (termCols - cols - 1));
+  return { protocol: imageLogo.protocol, base64: spellBase64, cols, rows, row, col };
+}
+
+function renderSpellEscape(slot) {
+  return slot ? placedImageEscape(slot.protocol, slot.base64, slot.cols, slot.rows, slot.row, slot.col) : '';
+}
+
 function truncate(s, n) {
   s = s || '';
   return s.length > n ? s.slice(0, n - 1) + '…' : s;
 }
 
-// One-time read of RELEASE_NOTES.md for the header box's "recent changes"
-// lines — this tool's own curated changelog (newest entry first, one line
-// per change; see RELEASE_NOTES.md for the exact format/maintenance
-// convention), not raw git history. Read once at startup (see listLoop) and
-// passed down through renderList/listViewHeight rather than re-read on every
-// repaint: the file can't change mid-session any more than agent-wizard's
-// own code can (the only thing that updates either, `--update`, is a
-// separate non-interactive invocation — see runUpdate), so re-reading it on
-// every keypress would just be wasted I/O. __dirname is used rather than cwd
-// because this is about the tool's own checkout, not whatever project the
-// wizard happens to be pointed at (same reasoning runUpdate already uses
-// __dirname for). Returns [] — not a placeholder array — when the file is
-// missing/empty, so the caller decides how to present that rather than
-// baking wording into the reader itself.
 function getRecentReleaseNotes(repoDir, n) {
   let raw;
   try {
@@ -535,50 +401,35 @@ function getRecentReleaseNotes(repoDir, n) {
     .map((line) => line.slice(2).trim());
 }
 
-// Boxed header drawn fresh every frame at the top of renderList, replacing
-// the plain "Agent Wizard" title + "project/user" line the TUI used to
-// open with — same information (plus recent-changes lines), just framed the
-// way Claude Code's own startup banner frames its cwd/tips. Width tracks the
-// terminal like every other layout calc in this file (computeColumnWidths,
-// wrapText), capped at 100 so the box doesn't stretch into unreadable
-// full-width lines on a very wide terminal. contentLines is pre-truncated
-// per line to fit inside the border rather than wrapped — these are already
-// short, single-fact lines (a directory, a changelog entry), so truncating
-// with an ellipsis reads better here than mid-word wrapping would.
-//
-// Every line this function returns must be exactly `width` characters wide
-// (ANSI codes aside) or the box's right edge visibly staggers between rows —
-// that's what broke the first version of this box: the top border was built
-// as tl + h + titleBar + dashes + tr, i.e. one extra leading '─' after the
-// corner that the `dashes` count never accounted for, making the top line
-// one character *longer* than every content line and the bottom border. Kept
-// the leading dash (`╭─ Title ──...──╮` reads better than `╭ Title ──...╮`)
-// but folded it into the width budget: dashes = width - 3 - titleBar.length,
-// not width - 2. Bottom border (bl + h.repeat(width - 2) + br) and content
-// lines ('│ ' + inner.padEnd(inner) + ' │', inner = width - 4) were already
-// correct — both come out to exactly `width` — so only the top line's
-// formula needed the fix.
 const BOX = { tl: '╭', tr: '╮', bl: '╰', br: '╯', h: '─' };
-function renderHeaderBox(title, contentLines, termWidth) {
-  const width = Math.max(24, Math.min(termWidth, 100));
-  const inner = width - 4; // '│ ' + content + ' │'
-  const titleBar = ` ${title} `;
-  const dashes = Math.max(0, width - 3 - titleBar.length); // -1 corner, -1 leading dash, -1 trailing corner
-  const top = dim(BOX.tl + BOX.h) + bold(titleBar) + dim(BOX.h.repeat(dashes) + BOX.tr);
-  const bottom = dim(BOX.bl + BOX.h.repeat(width - 2) + BOX.br);
-  const mid = contentLines.map((l) => dim('│ ') + truncate(l, inner).padEnd(inner) + dim(' │'));
+// leftPad pushes the label bar further right along the border before it
+// starts — used to shift the top border's title past the logo/divider when
+// the inline image logo is showing (see renderHeaderBox/computeLogoGutter),
+// so it reads as sitting to the right of the image rather than overlapping
+// the left corner above it.
+function buildLabeledBorder(leftCorner, rightCorner, label, width, leftPad) {
+  if (!label) return dim(leftCorner + BOX.h.repeat(width - 2) + rightCorner);
+  const pad = Math.min(Math.max(0, leftPad || 0), Math.max(0, width - 3));
+  const maxLabelBar = Math.max(0, width - 3 - pad);
+  const labelBar = truncate(` ${label} `, maxLabelBar);
+  const dashes = Math.max(0, maxLabelBar - labelBar.length);
+  return dim(leftCorner + BOX.h.repeat(1 + pad)) + bold(labelBar) + dim(BOX.h.repeat(dashes) + rightCorner);
+}
+
+function renderHeaderBox(title, contentLines, termWidth, bottomLabel, logoGutter) {
+  const width = Math.max(24, termWidth);
+  const inner = width - 4;
+  const top = buildLabeledBorder(BOX.tl, BOX.tr, title, width, logoGutter ? logoGutter + 1 : 0);
+  const bottom = buildLabeledBorder(BOX.bl, BOX.br, bottomLabel, width);
+  const gutter = logoGutter || 0;
+  const textInner = Math.max(0, inner - gutter - (gutter ? 2 : 0));
+  const mid = contentLines.map((l) => {
+    const divider = gutter ? ' '.repeat(gutter) + dim('│ ') : '';
+    return dim('│ ') + divider + truncate(l, textInner).padEnd(textInner) + dim(' │');
+  });
   return [top, ...mid, bottom];
 }
 
-// Column widths for the agent list re-derive from the live terminal width on
-// every render (renderList is re-invoked on every keypress and on resize --
-// see triggerRepaint/RESIZE_KEY), so name/source shrink or grow with the
-// window instead of being fixed truncation lengths that clip on a narrow
-// terminal or waste space on a wide one. Name/source cap out once they're
-// wide enough to fit real content (MAX_NAME_WIDTH/MAX_SOURCE_WIDTH) so one
-// unusually long entry can't starve the description column; whatever's left
-// after those plus fixed gaps/markers goes to description, with a floor so
-// it never goes negative on a tiny terminal.
 const MIN_DESC_WIDTH = 10;
 const MAX_NAME_WIDTH = 32;
 const MAX_SOURCE_WIDTH = 30;
@@ -598,11 +449,6 @@ function computeColumnWidths(rows, tabKey, termWidth) {
   return { nameWidth, sourceWidth, descWidth: Math.max(MIN_DESC_WIDTH, termWidth - fixed) };
 }
 
-// Tracked so the process-exit handler below (which normally guarantees the
-// terminal isn't left in alt-screen/hidden-cursor state no matter how the
-// TUI exits) doesn't fire for non-TUI codepaths like `--update`, which never
-// touch the screen at all and may be piped/redirected — writing raw escape
-// codes into a non-terminal stdout would corrupt that output.
 let inAltScreen = false;
 function enterAltScreen() {
   process.stdout.write('\x1B[?1049h\x1B[?25l');
@@ -615,31 +461,13 @@ function exitAltScreen() {
 function setRaw(enabled) {
   if (!process.stdin.isTTY) return;
   process.stdin.setRawMode(enabled);
-  // readline.Interface#close() (used by askLine's text prompts) pauses the
-  // underlying stream as part of its cleanup. setRawMode() only changes the
-  // tty driver's raw/cooked mode — it doesn't re-flow a paused stream. Without
-  // an explicit resume() here, stdin can end up paused with no active read
-  // request, nothing left keeping the event loop alive, and the process
-  // exits quietly instead of waiting for the next keypress.
   if (enabled) process.stdin.resume();
 }
 
-// Keypress events can arrive faster than the main loop consumes them (e.g. a
-// terminal delivering several buffered escape sequences from one read, or
-// arrow-key auto-repeat). A one-shot `.once('keypress', ...)` listener can
-// miss events that fire while no listener is attached between awaits, so
-// queue them instead: a single persistent listener feeds a FIFO queue, and
-// waitForKey() drains it (or waits for the next arrival) — no drops, no
-// reordering.
 const keyQueue = [];
 let keyResolver = null;
 
 function onKeypressEvent(str, key) {
-  // Keep `str` (the raw typed character(s)) alongside the symbolic `key`
-  // fields — key.name is only set for keys readline recognizes by name
-  // (return/escape/up/backspace/...); plain printable characters often have
-  // no key.name at all. askLine's inline line editor needs the actual
-  // character to append to its buffer, not just the symbolic name.
   const k = key ? { ...key, str } : { name: str, str };
   if (keyResolver) {
     const resolve = keyResolver;
@@ -657,15 +485,6 @@ function waitForKey() {
   });
 }
 
-// SIGWINCH (terminal resize) fires a 'resize' event on process.stdout, not a
-// keypress — every render function already recomputes layout from
-// process.stdout.rows/columns on each call, but the main loops only repaint
-// once waitForKey() resolves, which normally means "a key was pressed".
-// Without this, resizing the terminal leaves the last frame on screen
-// (wrong viewport/scroll math) until the user happens to press a key. Wake
-// whichever loop is currently waiting with a harmless synthetic key —
-// '__resize__' matches no key.name check anywhere, so it just forces a
-// re-render through the existing for(;;) loop with no side effects.
 const RESIZE_KEY = { name: '__resize__', str: '' };
 function triggerRepaint() {
   if (keyResolver) {
@@ -673,17 +492,10 @@ function triggerRepaint() {
     keyResolver = null;
     resolve(RESIZE_KEY);
   } else if (keyQueue[keyQueue.length - 1] !== RESIZE_KEY) {
-    // Coalesce: don't let a burst of resize events queue up multiple
-    // redundant repaints behind real keystrokes.
     keyQueue.push(RESIZE_KEY);
   }
 }
 
-// Keep-selection-visible viewport math: same idea viewFile already used for
-// scrolling a single file, generalized to any row list. Adjusts the previous
-// scroll offset by the minimum amount needed to bring `selIndex` back into
-// view, rather than re-centering — so the list doesn't jump around as you
-// move one row at a time.
 function computeViewport(rowsLength, selIndex, prevScroll, viewHeight) {
   if (viewHeight <= 0) return 0;
   let scroll = prevScroll;
@@ -693,25 +505,12 @@ function computeViewport(rowsLength, selIndex, prevScroll, viewHeight) {
   return Math.min(Math.max(scroll, 0), maxScroll);
 }
 
-// Fixed chrome around the scrollable row list: header box (2 border lines +
-// headerLineCount content lines — the count varies with how many
-// RELEASE_NOTES.md entries were found at startup, see getRecentReleaseNotes/
-// listLoop, so it's a parameter rather than a literal here; deliberately
-// named differently from the headerContentLines() function below even
-// though it's that function's .length, to avoid a same-named
-// function-vs-parameter shadowing that'd read like a bug at a glance) +
-// blank(1) + tabs(1) + blank(1) + blank+footer(2) + reserve for an optional
-// status message(2). Keep in sync with renderList's literal output.
 function listViewHeight(headerLineCount) {
   const termRows = process.stdout.rows || 24;
   const chrome = 2 + headerLineCount + 1 + 1 + 1 + 2 + 2;
   return Math.max(3, termRows - chrome);
 }
 
-// projectMode is only meaningful for the 'project' tab: 'cwd' shows the
-// active project directory's agents (the normal writable list, same shape as
-// the User tab); 'bookmarks' replaces that with a picker over remembered
-// project folders. cfg is only read in 'bookmarks' mode.
 function rowsFor(data, tabKey, projectMode, cfg) {
   if (tabKey === 'plugin') return data.plugin.agents.slice();
   if (tabKey === 'project' && projectMode === 'bookmarks') {
@@ -724,33 +523,36 @@ function rowsFor(data, tabKey, projectMode, cfg) {
   return rows;
 }
 
-// Builds the header box's content lines (everything between the borders) —
-// split out from renderList so listLoop can compute the exact same line
-// count up front for listViewHeight, without duplicating the "how many
-// lines does the recent-changes block take" logic in two places. Always at
-// least 2 lines: the project/user line, plus either up to 4 changelog
-// entries or one fallback line if RELEASE_NOTES.md wasn't found/empty —
-// recentNotes.length is fixed for the whole session (read once at startup),
-// so this returns the same count on every call for a given recentNotes.
-function headerContentLines(data, projectTag, recentNotes) {
-  const projectLine = `project: ${data.project.dir}${projectTag}   user: ${data.user.dir}`;
-  const noteLines = recentNotes.length
-    ? recentNotes.map((note, i) => `${i === 0 ? 'recent changes: ' : '                 '}${note}`)
-    : ['recent changes: (no RELEASE_NOTES.md found in this checkout)'];
-  return [projectLine, ...noteLines];
+function stripNoteDate(note) {
+  return note.replace(/^\d{4}-\d{2}-\d{2}:\s*/, '');
 }
 
-function renderList(data, tabIndex, selIndex, scrollOffset, viewHeight, status, projectMode, cfg, recentNotes) {
+function headerContentLines(data, recentNotes) {
+  const lines = [`user: ${data.user.dir}`, 'recent changes:'];
+  if (recentNotes.length) {
+    for (const note of recentNotes) lines.push(`  • ${stripNoteDate(note)}`);
+  } else {
+    lines.push('  (no RELEASE_NOTES.md found in this checkout)');
+  }
+  return lines;
+}
+
+function renderList(data, tabIndex, selIndex, scrollOffset, viewHeight, status, projectMode, cfg, recentNotes, imageLogo) {
   const tabKey = TABS[tabIndex];
   const rows = rowsFor(data, tabKey, projectMode, cfg);
   let out = clearScreen();
   const projectTag = projectMode === 'bookmark-project' ? '  (bookmark project)' : '';
   const headerWidth = process.stdout.columns || 80;
-  // ✦ before the title is the closest thing this TUI has to a logo — a
-  // single-column glyph (unlike an emoji, which can render 2 columns wide in
-  // some terminals and throw off the box-width math above) so it's safe to
-  // fold straight into renderHeaderBox's own width accounting.
-  const headerLines = renderHeaderBox('✦ Agent Wizard', headerContentLines(data, projectTag, recentNotes), headerWidth);
+  const contentLines = headerContentLines(data, recentNotes);
+  const gutter = imageLogo ? computeLogoGutter(contentLines.length, headerWidth) : 0;
+  const headerLines = renderHeaderBox(
+    `${LOGO} Agent Wizard`,
+    contentLines,
+    headerWidth,
+    `cwd: ${data.project.dir}${projectTag}`,
+    gutter
+  );
+  if (gutter) out += renderInlineLogoEscape(imageLogo.protocol, imageLogo.base64, gutter, contentLines.length);
   out += headerLines.join('\n') + '\n\n';
 
   out +=
@@ -767,15 +569,6 @@ function renderList(data, tabIndex, selIndex, scrollOffset, viewHeight, status, 
     const visible = rows.slice(scrollOffset, scrollOffset + viewHeight);
     visible.forEach((row, i) => {
       const absoluteIndex = scrollOffset + i;
-      // Plugin tab gets an extra source column (marketplace/plugin) since
-      // the same agent name can legitimately come from two different
-      // plugins -- dedupeAgents only collapses identical files, not name
-      // collisions, so those need to stay visually distinguishable. Column
-      // widths come from computeColumnWidths, which re-measures the
-      // terminal on every render. A fixed 2-char marker column (blank when
-      // not tracked) shows which plugin agents are currently tracked into
-      // the User tab ('u' toggles it), without disturbing column alignment
-      // for the untracked majority.
       const label = row.virtual
         ? row.label
         : tabKey === 'plugin'
@@ -801,7 +594,7 @@ function renderList(data, tabIndex, selIndex, scrollOffset, viewHeight, status, 
   if (tabKey === 'project') {
     if (projectMode === 'cwd') modeHint = '   b: bookmarks';
     else if (projectMode === 'bookmarks') modeHint = '   b: cwd   d: remove bookmark';
-    else modeHint = '   Esc: bookmarks   b: cwd'; // bookmark-project
+    else modeHint = '   Esc: bookmarks   b: cwd';
   }
   const editHint = data[tabKey].writable && !(tabKey === 'project' && projectMode === 'bookmarks') ? '   e edit   x delete' : '';
   const viewHint = tabKey === 'project' && projectMode === 'bookmarks' ? '' : '   v view';
@@ -824,9 +617,6 @@ function renderList(data, tabIndex, selIndex, scrollOffset, viewHeight, status, 
   process.stdout.write(out);
 }
 
-// Flat result list, not tabbed — a match can come from any scope at once, so
-// each row carries its own "[kind] label" tag (project name, "User", or
-// plugin source) inline instead of relying on a tab to say where it's from.
 function renderSearch(query, results, selIndex, scrollOffset, viewHeight, status) {
   let out = clearScreen();
   out += bold('Agent Wizard — search') + '\n\n';
@@ -865,8 +655,8 @@ function renderSearch(query, results, selIndex, scrollOffset, viewHeight, status
   process.stdout.write(out);
 }
 
-function renderMenu(title, subtitleLines, options, idx) {
-  let out = clearScreen();
+function renderMenu(title, subtitleLines, options, idx, spellSlot) {
+  let out = clearScreen() + renderSpellEscape(spellSlot);
   out += bold(title) + '\n';
   for (const line of subtitleLines) out += dim(line) + '\n';
   out += '\n';
@@ -878,17 +668,6 @@ function renderMenu(title, subtitleLines, options, idx) {
   process.stdout.write(out);
 }
 
-// renderViewer prints each entry in `lines` as exactly one on-screen row, so
-// its own pager math (scroll/viewHeight) is only correct if that's actually
-// true. Agent files routinely have long unwrapped lines (a system-prompt
-// paragraph, a dense description) that run well past terminal width — left
-// as-is, the terminal itself wraps them at write time into 2+ *visual* rows
-// the pager never accounted for, so the total painted this frame exceeds
-// process.stdout.rows and the terminal auto-scrolls mid-paint. That scrolls
-// the title and the first several lines off the top of the screen before
-// the frame even finishes — the "cut off at the top" symptom. Wrapping to
-// `width` ourselves first makes one array entry == one visual row again, so
-// viewHeight actually bounds what gets painted.
 function wrapText(raw, width) {
   const w = Math.max(1, width);
   const out = [];
@@ -918,13 +697,6 @@ function renderViewer(agent, lines, scroll, viewHeight) {
 // Text-input prompts
 // ---------------------------------------------------------------------------
 
-// Pause/resume capture around anything that hands stdin to another reader —
-// `readline.emitKeypressEvents` parses every byte on stdin into a 'keypress'
-// event regardless of raw-mode state, so it doesn't know or care that an
-// *external process* ($EDITOR, `claude`) is also about to read from the same
-// stream once we hand it stdio: 'inherit'. Without pausing here, keystrokes
-// typed into that external program would also land in our own nav keyQueue
-// and get replayed as bogus navigation once we get the terminal back.
 function pauseKeyCapture() {
   process.stdin.removeListener('keypress', onKeypressEvent);
 }
@@ -933,8 +705,6 @@ function resumeKeyCapture() {
   process.stdin.on('keypress', onKeypressEvent);
 }
 
-// Names keypress events can carry that represent editing/navigation keys
-// rather than an actual character to insert into the text buffer.
 const NON_TEXT_KEY_NAMES = new Set([
   'return',
   'enter',
@@ -952,19 +722,10 @@ const NON_TEXT_KEY_NAMES = new Set([
   'pagedown',
 ]);
 
-// Inline text-input prompt: reads one keystroke at a time off the same
-// keyQueue/waitForKey() everything else in the wizard uses, and never leaves
-// the alt screen or drops raw mode. Earlier this dropped to cooked mode via
-// readline.createInterface, which meant every text prompt (name, role,
-// description, delete confirmation, ...) visibly flipped the terminal out of
-// the alt screen and back — the wizard's screen would flicker/disappear for
-// a moment. Hand-rolling a plain append/backspace line editor (no cursor
-// movement mid-string, no history) is a small enough job that it's worth
-// doing here to keep everything on one screen instead.
-async function askLine(promptText) {
+async function askLine(promptText, spellSlot) {
   let buffer = '';
   for (;;) {
-    let out = clearScreen();
+    let out = clearScreen() + renderSpellEscape(spellSlot);
     out += bold('Agent Wizard') + '\n\n';
     out += promptText + buffer + reverse(' ') + '\n\n';
     out += dim('Enter confirm   Esc cancel/clear') + '\n';
@@ -1003,8 +764,6 @@ async function viewFile(agent) {
     const rows = process.stdout.rows || 24;
     const cols = process.stdout.columns || 80;
     const viewHeight = Math.max(3, rows - 5);
-    // Re-wrapped every frame (cheap at agent-file sizes) so a mid-view
-    // terminal resize re-flows correctly instead of using stale widths.
     const lines = wrapText(agent.raw, cols);
     scroll = Math.min(scroll, Math.max(0, lines.length - viewHeight));
     renderViewer(agent, lines, scroll, viewHeight);
@@ -1019,10 +778,6 @@ async function viewFile(agent) {
   }
 }
 
-// Same guidance add_agent.md/finish_agent_interactive.md hold claude to when
-// drafting a file for you, restated for a human reader rather than as
-// instructions addressed to claude — kept here as one plain constant instead
-// of a separate file so the wizard has zero required files beyond itself.
 const HELP_TEXT = `Writing a good agent
 ====================
 
@@ -1206,11 +961,6 @@ async function showHelp() {
   }
 }
 
-// Enter on a real agent row launches it directly, same terminal-handoff
-// pattern as openEditor/runClaudeInteractive: exit the alt screen, hand
-// stdio over entirely, and restore our own state once `claude --agent ...`
-// exits (however the user exits it). Not async — spawnSync blocks — but
-// callers await it like the other action handlers without issue.
 function runAgentSession(agent) {
   exitAltScreen();
   setRaw(false);
@@ -1238,13 +988,6 @@ async function deleteAgent(agent) {
   return `Deleted ${path.basename(agent.file)}.`;
 }
 
-// The 'x'/Delete action on a `linked: true` row (a tracked plugin agent
-// surfaced in the User tab — see scanAll) removes the tracking pointer from
-// config only. The plugin's actual file is left completely alone: deleting
-// someone's plugin source out from under them because they hit the same key
-// they'd use to delete a real user agent would be a nasty surprise. Same
-// non-destructive spirit as removing a bookmark ('d' in Project/bookmarks
-// mode) — no retype-to-confirm, because nothing is actually being destroyed.
 function untrackPluginAgent(cfg, agent) {
   cfg.trackedPluginAgents = cfg.trackedPluginAgents.filter((fp) => fp !== agent.file);
   saveConfig(cfg);
@@ -1257,27 +1000,10 @@ function trackPluginAgent(cfg, agent) {
   return `Tracked ${agent.name} into User tab — editing it there edits this plugin file directly (only do this for a plugin you own/are developing).`;
 }
 
-// Shared by the main list's 'u' hotkey and search's Tab menu — flips a
-// Plugin-scope row between tracked/untracked, applying the right side
-// effect (and status message) for whichever state it's leaving.
 function toggleTrackedPluginAgent(cfg, agent) {
   return cfg.trackedPluginAgents.includes(agent.file) ? untrackPluginAgent(cfg, agent) : trackPluginAgent(cfg, agent);
 }
 
-// Live-filtered search over every scope at once (Project cwd + every
-// bookmarked project + User + Plugin) — reuses the same keyQueue/waitForKey
-// character-at-a-time approach as askLine, but renders a filtered result
-// list under the query instead of a single-line prompt. Enter launches the
-// highlighted result directly (the common case). View/Edit/Delete are
-// tucked behind Tab -> a pickOption menu instead of bare hotkeys or Ctrl
-// combos: this is a live text field, so bare letters must stay free for
-// typing the query (a bare 'e' both inserted into the query *and* fired the
-// edit hotkey), and Ctrl+letter isn't reliable either — Ctrl+V in particular
-// is commonly eaten by the terminal/OS as its own Paste shortcut before the
-// byte ever reaches this process. Tab and pickOption's arrow-key navigation
-// don't collide with anything typeable, so this sidesteps both problems.
-// Re-scans the filesystem on every keystroke, same as the main loop already
-// does per-render via scanAll — fine at agent-file counts, no caching needed.
 async function searchFlow(cwd, cwdAgentsDir, cfg) {
   let query = '';
   let selIndex = 0;
@@ -1303,18 +1029,8 @@ async function searchFlow(cwd, cwdAgentsDir, cfg) {
       if (row) status = runAgentSession(row);
     } else if (key.name === 'tab') {
       if (row) {
-        // Linked (tracked plugin) rows get "Untrack" instead of "Delete" —
-        // same file-safety reasoning as untrackPluginAgent itself. Plain
-        // Plugin-scope rows (not yet tracked, not writable at all) get a
-        // Track/Untrack option instead of Edit/Delete, same toggle as the
-        // main list's 'u' hotkey — this is the only way to reach that
-        // action from inside search, since 'u' would just be a query
-        // character here.
         const deleteLabel = row.linked ? 'Untrack from User tab' : 'Delete';
         const trackLabel = cfg.trackedPluginAgents.includes(row.file) ? 'Untrack from User tab' : 'Track into User tab';
-        // Copy is offered regardless of scope/writability — same reasoning
-        // as the 'c' hotkey in listLoop: forking a User or Plugin agent into
-        // a specific project is just as valid a source as another project.
         const copyLabel = 'Copy to project…';
         const options = row.writable
           ? ['Launch', 'View', 'Edit', deleteLabel, copyLabel]
@@ -1342,14 +1058,10 @@ async function searchFlow(cwd, cwdAgentsDir, cfg) {
   }
 }
 
-// Generic arrow-key option picker — View/Edit/Delete used to be one of these
-// (a "what do you want to do with this agent" menu on Enter); that's gone
-// now, replaced by direct v/e/x hotkeys, but the create-flow "how should
-// claude finish this file?" choice still uses this picker.
-async function pickOption(title, subtitleLines, options) {
+async function pickOption(title, subtitleLines, options, spellSlot) {
   let idx = 0;
   for (;;) {
-    renderMenu(title, subtitleLines, options, idx);
+    renderMenu(title, subtitleLines, options, idx, spellSlot);
     setRaw(true);
     const key = await waitForKey();
     if (key.ctrl && key.name === 'c') process.exit(0);
@@ -1360,10 +1072,6 @@ async function pickOption(title, subtitleLines, options) {
   }
 }
 
-// Bookmarks-mode "+ Add project folder" flow: prompts for a path, offers to
-// create it if missing, saves it to cfg, and returns the project ROOT (not
-// the agents subdir — callers derive that, same as bookmark rows already do)
-// so it can be entered as a bookmark-project. Returns null if backed out.
 async function addProjectFolder(cwd, cfg) {
   const typed = await askLine('Path to project folder (absolute or ~/…, blank = current directory): ');
   const root = path.resolve(expandHome(typed) || cwd);
@@ -1379,14 +1087,6 @@ async function addProjectFolder(cwd, cfg) {
   return root;
 }
 
-// Menu of possible copy destinations: the current project (cwd) plus every
-// bookmarked project, plus a "type a path" escape hatch that reuses
-// addProjectFolder's create-if-missing/bookmark-it flow — copying an agent
-// into a project that isn't bookmarked yet shouldn't need a second, separate
-// typed-path prompt duplicating that logic. Returns the target project ROOT
-// (not its agents dir — copyAgentFlow derives that itself, same convention
-// bookmark rows and addProjectFolder already use), or null if the user
-// backed out (Esc from the menu, or backed out of addProjectFolder's prompt).
 async function pickCopyTarget(cwd, cfg) {
   const roots = [cwd, ...cfg.bookmarks];
   const options = [`${path.basename(cwd)} (cwd)`, ...cfg.bookmarks, 'Type a path…'];
@@ -1396,17 +1096,6 @@ async function pickCopyTarget(cwd, cfg) {
   return roots[options.indexOf(choice)];
 }
 
-// Copies an agent's file as-is into another project's .claude/agents/ —
-// reachable from Project, User, and Plugin tabs alike (see the 'c' hotkey in
-// listLoop and the "Copy to project…" search action), since forking a
-// personal or plugin agent into one specific project is just as common a
-// need as moving an agent between two projects. A straight byte-for-byte
-// copy, not a rename/merge — the file keeps its own name and frontmatter, so
-// a same-named file already at the destination is a real conflict, not
-// something to silently resolve. That's confirmed with a plain y/N rather
-// than delete's retype-the-name gate: overwriting here is easier to recover
-// from (the old content is still one `x` + editor-undo away, and nothing is
-// removed outright) than delete's actual, unrecoverable removal.
 async function copyAgentFlow(agent, cwd, cfg) {
   const targetRoot = await pickCopyTarget(cwd, cfg);
   if (!targetRoot) return 'Copy cancelled.';
@@ -1443,12 +1132,6 @@ function renderStatusScreen(label) {
   process.stdout.write(`${clearScreen()}\n${label}\n`);
 }
 
-// Runs `claude -p` with tool use disabled (--tools "") — this is a pure
-// text-in/text-out drafting call, not an agentic task, and forcing no tools
-// means no permission prompts to hang on in this non-interactive context.
-// Args are passed as an array straight to spawnSync (no shell involved), so
-// arbitrary user-typed text (role/seniority/tasks) can't break out via quotes
-// or shell metacharacters — there's no shell to break out of.
 function runClaudeGenerate(promptText, { systemPrompt, systemPromptFile, label } = {}) {
   // stdio stays piped (not 'inherit'), so this call never touches the tty —
   // no need to drop out of the alt screen / raw mode for it, just repaint
@@ -1469,9 +1152,6 @@ function describeClaudeError(res) {
   return stderr ? stderr.split('\n').slice(0, 3).join(' ') : `claude exited with status ${res.status}`;
 }
 
-// First of the two claude calls: turns the guided Q&A answers into a single
-// trigger-description sentence. Small, focused system prompt passed inline
-// rather than via add_agent.md — that file is only for the full-file call.
 async function generateDescription(role, seniority, tasks) {
   const prompt = `Role: ${role}\nSeniority: ${seniority}\nGeneral tasks: ${tasks}`;
   const res = runClaudeGenerate(prompt, {
@@ -1487,8 +1167,6 @@ async function generateDescription(role, seniority, tasks) {
   return { ok: true, description };
 }
 
-// Second call: the full agent file (frontmatter + system prompt body), using
-// add_agent.md as the system prompt via --system-prompt-file.
 async function generateAgentFile(scopeDir, name, description, role, seniority, tasks) {
   const prompt = [
     `Directory: ${scopeDir}`,
@@ -1511,12 +1189,6 @@ async function generateAgentFile(scopeDir, name, description, role, seniority, t
   return { ok: true, content };
 }
 
-// Launches a real interactive `claude` session (no -p, no --tools
-// restriction) attached straight to the terminal, same idea as openEditor —
-// stdio: 'inherit' hands the terminal over entirely until the session ends
-// (user exits it normally, e.g. Ctrl+D or /exit). Unlike the -p calls above,
-// this isn't captured/parsed: claude is expected to write the finished file
-// itself, at the exact path given in promptText, using its own Write tool.
 function runClaudeInteractive(promptText, systemPromptFile) {
   exitAltScreen();
   setRaw(false);
@@ -1545,11 +1217,11 @@ function buildInteractivePrompt(target, name, description, role, seniority, task
   ].join('\n');
 }
 
-// Total fallback if claude can't even draft a description (e.g. the CLI
-// isn't installed at all): ask for a plain description by hand and use the
-// old manual template, same as before this feature existed.
-async function manualCreateFallback(scopeDir, target, name, warning) {
-  const description = await askLine('One-line description (this is the delegation trigger Claude reads): ');
+async function manualCreateFallback(scopeDir, target, name, warning, imageLogo, spellBase64) {
+  const description = await askLine(
+    'One-line description (this is the delegation trigger Claude reads): ',
+    pickSpellSlot(imageLogo, spellBase64)
+  );
   const dirExisted = isDir(scopeDir);
   fs.mkdirSync(scopeDir, { recursive: true });
   fs.writeFileSync(target, buildManualTemplate(name, description), 'utf8');
@@ -1560,10 +1232,11 @@ async function manualCreateFallback(scopeDir, target, name, warning) {
   return note;
 }
 
-async function createFlow(data, tabKey) {
+async function createFlow(data, tabKey, imageLogo, spellBase64) {
   const scopeDir = tabKey === 'project' ? data.project.dir : path.join(os.homedir(), '.claude', 'agents');
+  const spellSlot = () => pickSpellSlot(imageLogo, spellBase64); // fresh random spot per question, held fixed for that question's own redraws
 
-  const name = await askLine('New agent name (lowercase-hyphens, e.g. code-reviewer): ');
+  const name = await askLine('New agent name (lowercase-hyphens, e.g. code-reviewer): ', spellSlot());
   if (!name) return 'Create cancelled (empty name).';
   if (!/^[a-z][a-z0-9-]*$/.test(name)) {
     return 'Create cancelled: name must be lowercase letters/digits/hyphens, starting with a letter.';
@@ -1577,10 +1250,11 @@ async function createFlow(data, tabKey) {
   }
 
   const role = await askLine(
-    'Role — what should this agent be? (e.g. "code reviewer", "database migration specialist"): '
+    'Role — what should this agent be? (e.g. "code reviewer", "database migration specialist"): ',
+    spellSlot()
   );
-  const seniority = await askLine('Seniority / experience level? (e.g. junior, senior, principal): ');
-  const tasks = await askLine('General tasks it will perform (a sentence, or comma-separated list): ');
+  const seniority = await askLine('Seniority / experience level? (e.g. junior, senior, principal): ', spellSlot());
+  const tasks = await askLine('General tasks it will perform (a sentence, or comma-separated list): ', spellSlot());
 
   const descResult = await generateDescription(role, seniority, tasks);
   if (!descResult.ok) {
@@ -1588,7 +1262,9 @@ async function createFlow(data, tabKey) {
       scopeDir,
       target,
       name,
-      `Couldn't draft a description via claude (${descResult.error}).`
+      `Couldn't draft a description via claude (${descResult.error}).`,
+      imageLogo,
+      spellBase64
     );
   }
   const { description } = descResult;
@@ -1596,7 +1272,8 @@ async function createFlow(data, tabKey) {
   const finishChoice = await pickOption(
     'How should claude finish drafting this file?',
     [`name: ${name}`, `description: "${description}"`],
-    ['Auto-draft with claude -p', 'Open interactive claude session', 'Skip — use manual template']
+    ['Auto-draft with claude -p', 'Open interactive claude session', 'Skip — use manual template'],
+    spellSlot()
   );
 
   const dirExisted = isDir(scopeDir);
@@ -1606,9 +1283,6 @@ async function createFlow(data, tabKey) {
   if (finishChoice === 'Open interactive claude session') {
     const prompt = buildInteractivePrompt(target, name, description, role, seniority, tasks);
     runClaudeInteractive(prompt, ADD_AGENT_INTERACTIVE_PROMPT_FILE);
-    // claude was told to write the file itself with its Write tool. If the
-    // session ended (however it ended) without that happening, fall back
-    // rather than leaving nothing on disk.
     if (fs.existsSync(target)) {
       note = `Created ${target} (finished interactively with claude).`;
     } else {
@@ -1621,14 +1295,10 @@ async function createFlow(data, tabKey) {
       fs.writeFileSync(target, fileResult.content, 'utf8');
       note = `Created ${target} (drafted by claude — description: "${description}").`;
     } else {
-      // The description call worked even though the full-file call didn't —
-      // keep that result rather than throwing it away.
       fs.writeFileSync(target, buildManualTemplate(name, description), 'utf8');
       note = `Created ${target} with a manual template — claude couldn't draft the full file (${fileResult.error}).`;
     }
   } else {
-    // null (Esc/q) or explicit "Skip" — manual template, keeping the
-    // already-generated description rather than losing it.
     fs.writeFileSync(target, buildManualTemplate(name, description), 'utf8');
     note = `Created ${target} with a manual template.`;
   }
@@ -1645,11 +1315,6 @@ async function createFlow(data, tabKey) {
 // Main loop
 // ---------------------------------------------------------------------------
 
-// Project has three states (cwd / bookmarks-list / bookmark-project), each
-// rendered through the same generic list machinery but needing independent
-// cursor/scroll state — otherwise moving between them would reset your place
-// in whatever you just left. Route selIndex/scrollOffset through separate
-// keys per state.
 function stateKey(tabKey, projectMode) {
   if (tabKey !== 'project') return tabKey;
   if (projectMode === 'bookmarks') return 'projectBookmarks';
@@ -1660,18 +1325,14 @@ function stateKey(tabKey, projectMode) {
 async function listLoop() {
   const cwd = process.cwd();
   const cfg = loadConfig();
-  // See getRecentReleaseNotes — up to 4 lines from this tool's own
-  // RELEASE_NOTES.md, read once for the whole session rather than on every
-  // repaint.
   const recentNotes = getRecentReleaseNotes(__dirname, 4);
-  // Fixed for the whole session — nothing in bookmarks mode is allowed to
-  // overwrite this. (Previous version pointed a single mutable
-  // "activeProjectDir" at whatever was last entered, which meant entering a
-  // bookmark destroyed any way back to the actual cwd. That's the bug this
-  // three-state design exists to fix.)
+  const protocol = detectImageProtocol();
+  const logoBase64 = protocol ? loadLogoBase64(__dirname) : null;
+  const imageLogo = logoBase64 ? { protocol, base64: logoBase64 } : null;
+  const spellBase64 = protocol ? loadSpellBase64(__dirname) : null;
   const cwdAgentsDir = path.join(cwd, '.claude', 'agents');
-  let selectedBookmarkRoot = null; // project ROOT (not agents dir) of the entered bookmark, if any
-  let projectMode = 'cwd'; // 'cwd' | 'bookmarks' | 'bookmark-project'
+  let selectedBookmarkRoot = null;
+  let projectMode = 'cwd';
   let tabIndex = 0;
   const selIndex = { project: 0, user: 0, plugin: 0, projectBookmarks: 0, projectBookmarkProject: 0 };
   const scrollOffset = { project: 0, user: 0, plugin: 0, projectBookmarks: 0, projectBookmarkProject: 0 };
@@ -1684,9 +1345,6 @@ async function listLoop() {
     return cwdAgentsDir;
   }
 
-  // Enter a bookmark's project view. Only resets that state's own cursor
-  // when pointed at a genuinely different project than last time — toggling
-  // back into the *same* one later (via 'b') should keep your place there too.
   function enterBookmarkProject(root) {
     if (root !== selectedBookmarkRoot) {
       selIndex.projectBookmarkProject = 0;
@@ -1702,16 +1360,10 @@ async function listLoop() {
     const data = scanAll(cwd, currentProjectAgentsDir(), cfg);
     let rows = rowsFor(data, tabKey, projectMode, cfg);
     if (selIndex[sKey] >= rows.length) selIndex[sKey] = Math.max(0, rows.length - 1);
-    // Header content line count varies with recentNotes (fixed for the
-    // session, see above) but not with tabKey/projectMode, so this is cheap
-    // to recompute every frame — and doing so via the same
-    // headerContentLines helper renderList itself calls means the two can
-    // never drift out of sync the way a second hand-counted formula could.
-    const projectTag = projectMode === 'bookmark-project' ? '  (bookmark project)' : '';
-    const viewHeight = listViewHeight(headerContentLines(data, projectTag, recentNotes).length);
+    const viewHeight = listViewHeight(headerContentLines(data, recentNotes).length);
     scrollOffset[sKey] = computeViewport(rows.length, selIndex[sKey], scrollOffset[sKey], viewHeight);
 
-    renderList(data, tabIndex, selIndex[sKey], scrollOffset[sKey], viewHeight, status, projectMode, cfg, recentNotes);
+    renderList(data, tabIndex, selIndex[sKey], scrollOffset[sKey], viewHeight, status, projectMode, cfg, recentNotes, imageLogo);
     status = '';
 
     setRaw(true);
@@ -1723,21 +1375,14 @@ async function listLoop() {
     else if (key.name === 'up') selIndex[sKey] = Math.max(0, selIndex[sKey] - 1);
     else if (key.name === 'down') selIndex[sKey] = Math.min(rows.length - 1, selIndex[sKey] + 1);
     else if (key.name === 'escape' && tabKey === 'project' && projectMode === 'bookmark-project') {
-      projectMode = 'bookmarks'; // selectedBookmarkRoot stays remembered
+      projectMode = 'bookmarks';
     } else if (key.name === 'b' && tabKey === 'project') {
       if (projectMode === 'cwd') {
-        // Resume wherever bookmarks-land was last left: the specific
-        // project if one is still remembered, otherwise the plain list.
         projectMode = selectedBookmarkRoot ? 'bookmark-project' : 'bookmarks';
       } else if (projectMode === 'bookmarks') {
-        // Backing out from the plain list, not from a specific project:
-        // forget the remembered project, so the next 'b' from cwd goes to
-        // the list again instead of jumping back into it.
         selectedBookmarkRoot = null;
         projectMode = 'cwd';
       } else {
-        // bookmark-project -> cwd. Keep selectedBookmarkRoot so the next
-        // 'b' resumes this same project.
         projectMode = 'cwd';
       }
     } else if (key.name === 'd' && tabKey === 'project' && projectMode === 'bookmarks') {
@@ -1760,12 +1405,8 @@ async function listLoop() {
             enterBookmarkProject(row.root);
           }
         } else if (row.kind === 'new') {
-          status = await createFlow(data, tabKey);
+          status = await createFlow(data, tabKey, imageLogo, spellBase64);
         } else if (!row.virtual) {
-          // Enter runs the agent directly rather than opening a menu —
-          // picking an agent to actually use is the far more common action
-          // than managing its file. View/Edit/Delete are direct hotkeys now
-          // (v/e/x below), not a submenu.
           status = runAgentSession(row);
         }
       }
@@ -1784,40 +1425,21 @@ async function listLoop() {
         status = row.linked ? untrackPluginAgent(cfg, row) : await deleteAgent(row);
       }
     } else if (key.name === 'c' && !(tabKey === 'project' && projectMode === 'bookmarks')) {
-      // Copy works from any tab that can show a real agent row (Project,
-      // User, Plugin) — same "any tab" reach as 'v' — but not the Project
-      // bookmarks-list mode, whose rows are virtual bookmark/add-bookmark
-      // entries rather than agents.
       rows = rowsFor(data, tabKey, projectMode, cfg);
       const row = rows[selIndex[sKey]];
       if (row && !row.virtual) status = await copyAgentFlow(row, cwd, cfg);
     } else if (key.str === 'u' && tabKey === 'plugin') {
-      // Track/untrack toggle — Plugin tab's own scope stays read-only
-      // (data.plugin.writable is still false, so 'e'/'x' here still do
-      // nothing), but this doesn't write to the plugin file at all, just to
-      // our own config, so it doesn't need that guard.
       rows = rowsFor(data, tabKey, projectMode, cfg);
       const row = rows[selIndex[sKey]];
       if (row && !row.virtual) status = toggleTrackedPluginAgent(cfg, row);
     } else if (key.str === '/') {
-      // Global, like '?' — doesn't depend on tab/projectMode, so no row
-      // lookup needed here. cfg is passed by reference; searchFlow's own
-      // edit/delete calls don't touch bookmarks, so nothing needs re-syncing
-      // on return.
       await searchFlow(cwd, cwdAgentsDir, cfg);
     } else if (key.str === '?') {
-      // Global — doesn't depend on tab/row, so no row lookup needed.
       await showHelp();
     }
   }
 }
 
-// `lsagents --update` — pulls this checkout to the latest repo HEAD. Since
-// the installed binary is a symlink (or, on Windows without Developer
-// Mode/admin, a shim pointing straight at this file — see install.ps1), a
-// plain `git pull` in place is all that's needed for the change to take
-// effect; no re-linking required. Doesn't touch the TUI/TTY machinery at
-// all, so it works fine piped, in scripts, cron, etc.
 function runUpdate() {
   const repoDir = __dirname;
   if (!fs.existsSync(path.join(repoDir, '.git'))) {
@@ -1841,12 +1463,6 @@ async function main() {
   readline.emitKeypressEvents(process.stdin);
   resumeKeyCapture();
   enterAltScreen();
-  // Only listen while we own the terminal. During openEditor/runAgentSession/
-  // runClaudeGenerate/runClaudeInteractive, stdio is 'inherit'-ed to a child
-  // process (spawnSync, which blocks the event loop entirely) — no repaint
-  // should happen mid-handoff anyway, and removing the listener means a
-  // resize during that window doesn't leave a stray queued key waiting for
-  // us when we get stdin back.
   process.stdout.on('resize', triggerRepaint);
   try {
     await listLoop();
@@ -1855,8 +1471,6 @@ async function main() {
     exitAltScreen();
     setRaw(false);
   }
-  // stdin's keypress listener + raw mode keep the event loop alive even
-  // after we're done; exit explicitly rather than leaving the process hung.
   process.exit(0);
 }
 

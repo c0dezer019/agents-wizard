@@ -1,3 +1,5 @@
+![agent-wizard](assets/banner.png)
+
 # agent-wizard
 
 Terminal UI for managing Claude Code subagents (project, user, and plugin scopes). Plain Node script, no npm dependencies — uses only built-in `fs`/`path`/`os`/`readline`/`child_process`.
@@ -6,7 +8,11 @@ Real arrow-key/Enter navigation needs a program that owns the terminal directly,
 
 ![agent-wizard screenshot](screenshot.svg)
 
-Every screen opens with a header box — project/user directories currently in view, plus up to the last 4 entries from [`RELEASE_NOTES.md`](RELEASE_NOTES.md), read once at startup. Same idea as Claude Code's own startup banner, just redrawn on every frame instead of shown once, since this TUI already repaints the whole screen on every keypress.
+Every screen opens with a header box — title on the top border, `cwd` on the bottom border, and the user agents dir plus up to the last 4 [`RELEASE_NOTES.md`](RELEASE_NOTES.md) entries (dates stripped, one bullet per line) in between, read once at startup. Same idea as Claude Code's own startup banner, just redrawn on every frame instead of shown once, since this TUI already repaints the whole screen on every keypress.
+
+On terminals that speak iTerm2's or Kitty's inline-image protocol, that header box also draws the wizard from `assets/logo.png` on its left edge (content shifts right, divider in between), with the top border's "✦ Agent Wizard" title shifting right along with it so it no longer sits above the image. Falls back to the title back at the left edge and no image on terminals it doesn't recognize — narrow terminals, tmux/screen, or plain unrecognized `TERM`/`TERM_PROGRAM`. Set `AGENT_WIZARD_NO_LOGO=1` to force that fallback anywhere.
+
+Same terminals also get the wizard mid-spell (`assets/spell.png`) popping up at a random spot on screen while you answer "+ New agent"'s questions — a new random spot each question, purely decorative.
 
 ## Install
 
@@ -86,6 +92,9 @@ Falls back to the manual template if `claude` CLI is missing, the `-p` call fail
 ## Files
 
 - `agent-wizard.js` — the script
+- `assets/logo.png` — small wizard-only crop drawn into the header box on terminals with inline-image support (see `agent-wizard.js`'s "Inline image logo" section)
+- `assets/spell.png` — wizard mid-spell crop, popped up at a random spot during "+ New agent"'s questions on the same terminals
+- `assets/banner.png` — full logo (wizard + wordmark), used at the top of this README
 - `RELEASE_NOTES.md` — hand-maintained changelog; the TUI's header box reads its first 4 lines on startup. Add an entry here alongside any user-visible change
 - `install.sh` — macOS/Linux installer (symlinks into a bin dir on `PATH`)
 - `install.ps1` — Windows installer (symlink, or shim fallback without Developer Mode/admin)
