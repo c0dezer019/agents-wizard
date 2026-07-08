@@ -748,7 +748,10 @@ function openEditor(filePath) {
   exitAltScreen();
   setRaw(false);
   pauseKeyCapture();
-  const res = spawnSync(editor, [filePath], { stdio: 'inherit' });
+  // shell: true on win32 so .cmd/.bat editor shims (e.g. VS Code's `code`
+  // launcher) resolve — spawnSync without a shell can fail to find these
+  // on Windows even when the editor works fine from an interactive prompt.
+  const res = spawnSync(editor, [filePath], { stdio: 'inherit', shell: process.platform === 'win32' });
   resumeKeyCapture();
   enterAltScreen();
   return { editor, res };
@@ -968,7 +971,13 @@ function runAgentSession(agent) {
   process.stdout.write(
     `\nStarting claude --agent ${agent.name} (exit the session normally to return to the wizard)...\n\n`
   );
-  const res = spawnSync('claude', ['--agent', agent.name], { stdio: 'inherit' });
+  // shell: true on win32 — global npm installs commonly expose `claude` as a
+  // .cmd shim, which spawnSync can fail to resolve without a shell even
+  // though it's on PATH.
+  const res = spawnSync('claude', ['--agent', agent.name], {
+    stdio: 'inherit',
+    shell: process.platform === 'win32',
+  });
   resumeKeyCapture();
   enterAltScreen();
   if (res.error) return `Could not launch "claude --agent ${agent.name}": ${res.error.message}`;
@@ -1140,7 +1149,12 @@ function runClaudeGenerate(promptText, { systemPrompt, systemPromptFile, label }
   const args = ['-p', promptText, '--tools', ''];
   if (systemPromptFile) args.push('--system-prompt-file', systemPromptFile);
   if (systemPrompt) args.push('--system-prompt', systemPrompt);
-  const res = spawnSync('claude', args, { encoding: 'utf8', timeout: 120000 });
+  // shell: true on win32 — see runAgentSession for why (.cmd shim resolution).
+  const res = spawnSync('claude', args, {
+    encoding: 'utf8',
+    timeout: 120000,
+    shell: process.platform === 'win32',
+  });
   return res;
 }
 
@@ -1197,8 +1211,10 @@ function runClaudeInteractive(promptText, systemPromptFile) {
     '\nStarting an interactive claude session to finish this agent together ' +
       '(exit the session normally, e.g. Ctrl+D, to return to the wizard)...\n\n'
   );
+  // shell: true on win32 — see runAgentSession for why (.cmd shim resolution).
   const res = spawnSync('claude', ['--system-prompt-file', systemPromptFile, promptText], {
     stdio: 'inherit',
+    shell: process.platform === 'win32',
   });
   resumeKeyCapture();
   enterAltScreen();
@@ -1455,11 +1471,51 @@ function runUpdate() {
   process.exit(res.status ?? 0);
 }
 
+// Windows Terminal (ConPTY) covers every escape sequence this tool relies on
+// — raw mode, alt-screen, cursor positioning, colors — except the inline
+// image protocols (kitty/iTerm), which it doesn't implement. WezTerm covers
+// those too. Neither is required to run the tool (everything still degrades
+// cleanly — see detectImageProtocol), so this is a one-time heads-up, not a
+// hard gate. Set AGENT_WIZARD_SKIP_TERM_CHECK to silence it permanently.
+function checkWindowsTerminalRecommendation() {
+  if (process.platform !== 'win32') return Promise.resolve();
+  if (process.env.AGENT_WIZARD_SKIP_TERM_CHECK) return Promise.resolve();
+  const inWindowsTerminal = Boolean(process.env.WT_SESSION);
+  const inWezTerm = process.env.TERM_PROGRAM === 'WezTerm';
+  if (inWindowsTerminal || inWezTerm) return Promise.resolve();
+
+  console.log(
+    [
+      '',
+      'agent-wizard works best in Windows Terminal (recommended) or WezTerm.',
+      "You're running in a different console — the TUI will still work, but",
+      'rendering may be inconsistent, and neither the logo image nor spell',
+      'animation will show (Windows Terminal never renders these either;',
+      'WezTerm is the only Windows terminal that supports both).',
+      '',
+      '  Windows Terminal: https://aka.ms/terminal',
+      '  WezTerm:          https://wezterm.org',
+      '',
+      'Set AGENT_WIZARD_SKIP_TERM_CHECK=1 to silence this in future.',
+      '',
+      'Press any key to continue anyway...',
+    ].join('\n')
+  );
+  return new Promise((resolve) => {
+    setRaw(true);
+    process.stdin.once('data', () => {
+      setRaw(false);
+      resolve();
+    });
+  });
+}
+
 async function main() {
   if (!process.stdin.isTTY) {
     console.error('agent-wizard needs an interactive terminal (TTY). Run it directly, not piped.');
     process.exit(1);
   }
+  await checkWindowsTerminalRecommendation();
   readline.emitKeypressEvents(process.stdin);
   resumeKeyCapture();
   enterAltScreen();
