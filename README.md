@@ -48,6 +48,14 @@ lsagents --update
 
 Runs `git pull` in this checkout. Since the installed binary is a symlink (or, on Windows without Developer Mode/admin, a shim pointing straight at `agent-wizard.js` — see install.ps1), pulling is all that's needed; no need to re-run the installer. Equivalent to `git pull` directly from the `agent-wizard` directory. Doesn't require a TTY, so it works piped or scripted.
 
+## Version
+
+```bash
+lsagents --version   # or -v
+```
+
+Prints an estimated semver and exits — no TTY needed. There's no `package.json`/tag to read a real version from, so it's *derived*: walk this checkout's git log oldest-to-newest and bump major/minor/patch by each commit's conventional-commit prefix (`feat` → minor, `fix`/`perf` → patch, a breaking `!` or `BREAKING CHANGE` → major once past `0.x`, minor while still `0.x`; everything else, e.g. `chore`/`docs`/`refactor`, doesn't bump). A `-dev` suffix is appended if the working tree has uncommitted changes. Same estimate shows in the header box title (`✦ Agent Wizard vX.Y.Z`) on the main screen. See `lib/version.js`.
+
 > Renamed from `agents-wizard` (plural) on 2026-07-08 — filenames, the `~/.claude/agent-wizard/config.json` config path, and on-screen titles all changed. If your installed `lsagents` still points at a file called `agents-wizard.js`, re-run the installer after pulling; old bookmarks/tracked-agent config migrates automatically on first run.
 
 ## Controls
@@ -81,7 +89,7 @@ Runs `git pull` in this checkout. Since the installed binary is a symlink (or, o
 
 ## Creating an agent
 
-"+ New agent" asks for role, seniority, and general tasks (not a raw description), drafts a trigger description via one tool-disabled `claude -p` call, then you choose how to finish the file:
+"+ New agent" asks for role, seniority, and general tasks (not a raw description), drafts a trigger description via one tool-disabled `claude -p` call, then you choose how to finish the file. The tasks and guidelines questions are multi-line: `Enter` opens `$EDITOR`/`$VISUAL` (nano by default) on a temp file seeded with any prior answer — write as much as you want, save & close to continue; `#`-prefixed comment lines are stripped before that text gets sent to claude.
 
 - **Auto-draft with `claude -p`** — a second tool-disabled call using `add_agent.md` (same directory) as system prompt, writing the complete file non-interactively.
 - **Open interactive claude session** — a real interactive `claude` session in your terminal, full tool access, using `finish_agent_interactive.md` as system prompt.
@@ -96,6 +104,7 @@ Falls back to the manual template if `claude` CLI is missing, the `-p` call fail
 - `assets/spell.png` — wizard mid-spell crop, popped up at a random spot during "+ New agent"'s questions on the same terminals
 - `assets/banner.png` — full logo (wizard + wordmark), used at the top of this README
 - `RELEASE_NOTES.md` — hand-maintained changelog; the TUI's header box reads its first 4 lines on startup. Add an entry here alongside any user-visible change
+- `lib/version.js` — estimates semver from git log conventional-commit prefixes, backs `--version`/`-v` and the header box's version display
 - `install.sh` — macOS/Linux installer (symlinks into a bin dir on `PATH`)
 - `install.ps1` — Windows installer (symlink, or shim fallback without Developer Mode/admin)
 - `add_agent.md` — system prompt for the non-interactive auto-draft path

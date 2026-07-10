@@ -6,6 +6,8 @@ header box reads the first 4 lines here on startup (see
 any user-visible change, same turn as the code/README update, so the header
 stays accurate.
 
+- 2026-07-10: `lsagents --version` (or `-v`) prints an estimated semver, derived from conventional-commit prefixes (`feat`/`fix`/`perf`/breaking `!`) walked across this checkout's git log — no `package.json` or tags needed. Same version now shows in the header box title (`✦ Agent Wizard vX.Y.Z`, with a `-dev` suffix when the working tree has uncommitted changes). See `lib/version.js`.
+- 2026-07-10: "+ New agent"'s tasks/guidelines questions now open `$EDITOR`/`$VISUAL` (nano by default) on a temp file for real multi-line input instead of a single-line prompt — same editor path as `e` (edit agent), seeded with any prior answer, comment lines (`#`) stripped before being sent to claude for description/file generation.
 - 2026-07-10: "+ New agent" now asks a "Guidelines or restrictions?" question (optional, after tasks) that gets woven into the drafted system prompt (auto-draft, interactive, and manual-template paths all use it).
 - 2026-07-10: Text prompts (name/role/seniority/tasks/guidelines) support real cursor editing — ←/→/Home/End move the cursor, typed chars insert at cursor, Backspace/Delete act at cursor, instead of only appending/trimming from the end.
 - 2026-07-10: "+ New agent" navigation overhaul: `Esc` now cancels the whole create flow outright from any step (name, role, seniority, tasks, guidelines, finish-choice menu); `Shift+Tab` steps back to the previous question instead, prefilled with what you'd typed there, chaining all the way back to name. Also fixed a bug where escaping the finish-choice menu silently fell through to the manual template instead of cancelling.

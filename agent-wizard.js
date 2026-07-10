@@ -30,6 +30,7 @@ const {
   resumeKeyCapture,
 } = require("./lib/keys");
 const { checkForUpdate } = require("./lib/update-notice");
+const { computeVersion } = require("./lib/version");
 const {
   detectImageProtocol,
   loadLogoBase64,
@@ -75,6 +76,7 @@ async function listLoop() {
   let cwd = process.cwd();
   const cfg = loadConfig();
   const recentNotes = getRecentReleaseNotes(__dirname, 4);
+  const version = computeVersion(__dirname);
   const protocol = detectImageProtocol();
   const logoBase64 = protocol ? loadLogoBase64(__dirname) : null;
   const imageLogo = logoBase64 ? { protocol, base64: logoBase64 } : null;
@@ -160,6 +162,7 @@ async function listLoop() {
       cfg,
       recentNotes,
       imageLogo,
+      version,
     );
     status = "";
 
@@ -371,7 +374,10 @@ module.exports = {
 };
 
 if (require.main === module) {
-  if (process.argv.includes("--update")) {
+  if (process.argv.includes("--version") || process.argv.includes("-v")) {
+    console.log(computeVersion(__dirname) || "unknown (not a git checkout)");
+    process.exit(0);
+  } else if (process.argv.includes("--update")) {
     runUpdate();
   } else {
     main().catch((err) => {
