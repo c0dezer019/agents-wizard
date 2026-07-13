@@ -173,10 +173,17 @@ async function listLoop() {
     else if (key.name === "left")
       tabIndex = (tabIndex + TABS.length - 1) % TABS.length;
     else if (key.name === "right") tabIndex = (tabIndex + 1) % TABS.length;
-    else if (key.name === "up")
-      selIndex[sKey] = Math.max(0, selIndex[sKey] - 1);
-    else if (key.name === "down")
-      selIndex[sKey] = Math.min(rows.length - 1, selIndex[sKey] + 1);
+    else if (key.name === "up") {
+      let next = Math.max(0, selIndex[sKey] - 1);
+      while (next > 0 && rows[next] && rows[next].kind === "section")
+        next -= 1;
+      selIndex[sKey] = next;
+    } else if (key.name === "down") {
+      let next = Math.min(rows.length - 1, selIndex[sKey] + 1);
+      while (next < rows.length - 1 && rows[next] && rows[next].kind === "section")
+        next += 1;
+      selIndex[sKey] = next;
+    }
     else if (
       key.name === "escape" &&
       tabKey === "project" &&

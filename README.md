@@ -84,7 +84,7 @@ Prints an estimated semver and exits — no TTY needed. There's no `package.json
   - `bookmarks`: flat list of remembered project folders (`~/.claude/agent-wizard/config.json`). `d` removes a bookmark (non-destructive, no confirmation).
   - `bookmark-project`: one bookmarked project's agents, same writable list as cwd. `Esc` → bookmarks list, `b` → cwd.
   - `b` resumes whichever bookmark state you last left; backing all the way out forgets it, so the next `b` from cwd goes to the list.
-- **User** — `~/.claude/agents/` (personal, all projects). Writable. Also shows any plugin agents you've "tracked" (see Plugin below), mixed into the same list — they're real rows here, with the same Enter/`v`/`e`/`x`.
+- **User** — `~/.claude/agents/` (personal, all projects). Writable. Also shows any plugin agents you've "tracked" (see Plugin below), mixed into the same list — they're real rows here, with the same Enter/`v`/`e`/`x`. Detects the cwd's stack (`package.json` deps, `requirements.txt`/`pyproject.toml`, `go.mod`, `Cargo.toml`, `Gemfile`, `Dockerfile`, etc. — see `lib/detect.js`) and, when both sides land non-empty, splits the list into a `recommended agents:` section (agent name/description matches a detected stack keyword) and an `others:` section beneath it. Falls back to the flat list otherwise. Section headers are inert — `↑`/`↓` skip over them, no action key does anything on them.
 - **Plugin** — `~/.claude/plugins/marketplaces/**/agents/*.md`. All agents from plugins. Some plugins may include an agent with same name as another. Differentiated with a column that shows plugin it belongs to. Read-only in this tab (`e`/`x` do nothing here) — but `u` tracks/untracks the highlighted agent into the User tab (marked `★` here once tracked), for when you own that plugin/marketplace checkout and want to edit it directly. Tracking only remembers the file path (`~/.claude/agent-wizard/config.json`, `trackedPluginAgents`) — it does **not** copy the file into `~/.claude/agents/`, so editing a tracked agent from the User tab edits the plugin's real file in place. Only do this for a plugin you own or are developing; untracking (`x` on the linked row, or `u` again from the Plugin tab) just forgets the pointer and never touches the file.
 
 ## Creating an agent
@@ -105,6 +105,7 @@ Falls back to the manual template if `claude` CLI is missing, the `-p` call fail
 - `assets/banner.png` — full logo (wizard + wordmark), used at the top of this README
 - `RELEASE_NOTES.md` — hand-maintained changelog; the TUI's header box reads its first 4 lines on startup. Add an entry here alongside any user-visible change
 - `lib/version.js` — estimates semver from git log conventional-commit prefixes, backs `--version`/`-v` and the header box's version display
+- `lib/detect.js` — detects cwd's stack from manifest files/deps, matches agent name/description against detected keywords, backs the User tab's `recommended agents:` / `others:` split
 - `install.sh` — macOS/Linux installer (symlinks into a bin dir on `PATH`)
 - `install.ps1` — Windows installer (symlink, or shim fallback without Developer Mode/admin)
 - `add_agent.md` — system prompt for the non-interactive auto-draft path
