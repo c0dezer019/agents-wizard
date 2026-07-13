@@ -284,7 +284,16 @@ function runUpdate() {
     process.exit(1);
   }
   console.log(`Updating agent-wizard in ${repoDir}...`);
-  const res = spawnSync("git", ["-C", repoDir, "pull"], { stdio: "inherit" });
+  const branchRes = spawnSync(
+    "git",
+    ["-C", repoDir, "symbolic-ref", "--short", "HEAD"],
+    { encoding: "utf8" },
+  );
+  const branch = branchRes.status === 0 ? branchRes.stdout.trim() : "";
+  const pullArgs = branch
+    ? ["-C", repoDir, "pull", "origin", branch]
+    : ["-C", repoDir, "pull"];
+  const res = spawnSync("git", pullArgs, { stdio: "inherit" });
   if (res.error) {
     console.error(`error: failed to run git: ${res.error.message}`);
     process.exit(1);
