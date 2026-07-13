@@ -291,8 +291,8 @@ function runUpdate() {
   );
   const branch = branchRes.status === 0 ? branchRes.stdout.trim() : "";
   const pullArgs = branch
-    ? ["-C", repoDir, "pull", "origin", branch]
-    : ["-C", repoDir, "pull"];
+    ? ["-C", repoDir, "pull", "--tags", "origin", branch]
+    : ["-C", repoDir, "pull", "--tags"];
   const res = spawnSync("git", pullArgs, { stdio: "inherit" });
   if (res.error) {
     console.error(`error: failed to run git: ${res.error.message}`);
