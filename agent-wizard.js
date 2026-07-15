@@ -47,6 +47,8 @@ const {
 const { showHelp } = require("./lib/help");
 const {
   runAgentSession,
+  resumeSession,
+  pickAgentAndResume,
   editAgent,
   deleteAgent,
   untrackPluginAgent,
@@ -89,6 +91,7 @@ async function listLoop() {
     project: 0,
     user: 0,
     plugin: 0,
+    sessions: 0,
     projectBookmarks: 0,
     projectBookmarkProject: 0,
   };
@@ -96,6 +99,7 @@ async function listLoop() {
     project: 0,
     user: 0,
     plugin: 0,
+    sessions: 0,
     projectBookmarks: 0,
     projectBookmarkProject: 0,
   };
@@ -108,6 +112,13 @@ async function listLoop() {
       return path.join(selectedBookmarkRoot, ".claude", "agents");
     }
     return cwdAgentsDir;
+  }
+
+  // The project directory an agent session should actually run in — cwd
+  // normally, or the browsed bookmark project's root when in that mode.
+  // Also what agent-wizard's own session log (Sessions tab) scopes to.
+  function activeProjectRoot() {
+    return path.dirname(path.dirname(currentProjectAgentsDir()));
   }
 
   function enterBookmarkProject(root) {
@@ -227,7 +238,9 @@ async function listLoop() {
       rows = rowsFor(data, tabKey, projectMode, cfg);
       const row = rows[selIndex[sKey]];
       if (row) {
-        if (tabKey === "project" && projectMode === "bookmarks") {
+        if (tabKey === "sessions") {
+          if (row.kind === "session") status = resumeSession(row, undefined);
+        } else if (tabKey === "project" && projectMode === "bookmarks") {
           if (row.kind === "add-bookmark") {
             const picked = await addProjectFolder(cwd, cfg);
             if (picked && !picked.isGlob) enterBookmarkProject(picked.root);
@@ -237,9 +250,14 @@ async function listLoop() {
         } else if (row.kind === "new") {
           status = await createFlow(data, tabKey, imageLogo, spellBase64);
         } else if (!row.virtual) {
-          status = runAgentSession(row);
+          status = runAgentSession(row, activeProjectRoot());
         }
       }
+    } else if (key.str === "a" && tabKey === "sessions") {
+      rows = rowsFor(data, tabKey, projectMode, cfg);
+      const row = rows[selIndex[sKey]];
+      if (row && row.kind === "session")
+        status = await pickAgentAndResume(row, data);
     } else if (key.name === "v") {
       rows = rowsFor(data, tabKey, projectMode, cfg);
       const row = rows[selIndex[sKey]];

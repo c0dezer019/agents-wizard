@@ -62,9 +62,10 @@ Prints an estimated semver and exits — no TTY needed. There's no `package.json
 
 | Key | Action |
 |---|---|
-| `←` / `→` | switch tabs (Project / User / Plugin) |
+| `←` / `→` | switch tabs (Project / User / Plugin / Sessions) |
 | `↑` / `↓` | move selection (scrolls to keep selection visible) |
-| `Enter` | on an agent: launch it (`claude --agent <name>`, foreground); on "+ New agent": create one; in Project bookmarks mode: enter that project's agent list |
+| `Enter` | on an agent: launch it (`claude --agent <name>`, foreground); on "+ New agent": create one; in Project bookmarks mode: enter that project's agent list; on Sessions: resume it (`claude --resume <id>`, same agent it last used) |
+| `a` | (Sessions tab) resume the selected session under a different agent, or with none, instead of the default (same agent as before) |
 | `v` | view selected agent's raw file (any tab, incl. Plugin) |
 | `c` | copy selected agent's file into another project's `.claude/agents/` (any tab, incl. Plugin — not the bookmarks list itself). Pick cwd, a bookmark, or type a new path; confirms before overwriting a same-named file at the destination |
 | `e` | edit selected agent with `$EDITOR` (Project/User only) |
@@ -86,6 +87,7 @@ Prints an estimated semver and exits — no TTY needed. There's no `package.json
   - `b` resumes whichever bookmark state you last left; backing all the way out forgets it, so the next `b` from cwd goes to the list.
 - **User** — `~/.claude/agents/` (personal, all projects). Writable. Also shows any plugin agents you've "tracked" (see Plugin below), mixed into the same list — they're real rows here, with the same Enter/`v`/`e`/`x`. Detects the cwd's stack (`package.json` deps, `requirements.txt`/`pyproject.toml`, `go.mod`, `Cargo.toml`, `Gemfile`, `Dockerfile`, etc. — see `lib/detect.js`) and, when both sides land non-empty, splits the list into a `recommended agents:` section (agent name/description matches a detected stack keyword) and an `others:` section beneath it. Falls back to the flat list otherwise. Section headers are inert — `↑`/`↓` skip over them, no action key does anything on them.
 - **Plugin** — `~/.claude/plugins/marketplaces/**/agents/*.md`. All agents from plugins. Some plugins may include an agent with same name as another. Differentiated with a column that shows plugin it belongs to. Read-only in this tab (`e`/`x` do nothing here) — but `u` tracks/untracks the highlighted agent into the User tab (marked `★` here once tracked), for when you own that plugin/marketplace checkout and want to edit it directly. Tracking only remembers the file path (`~/.claude/agent-wizard/config.json`, `trackedPluginAgents`) — it does **not** copy the file into `~/.claude/agents/`, so editing a tracked agent from the User tab edits the plugin's real file in place. Only do this for a plugin you own or are developing; untracking (`x` on the linked row, or `u` again from the Plugin tab) just forgets the pointer and never touches the file.
+- **Sessions** — past `claude` launches for whichever project is currently active (cwd, or the selected bookmark project), newest first. Backed by agent-wizard's own log (`~/.claude/agent-wizard/sessions.json`), written every time it launches or resumes a session — not by parsing Claude Code's transcripts, so the agent name shown is exactly what agent-wizard passed via `--agent`, never a guess. Each row shows relative time, that agent (or "no agent"), and the session ID. `Enter` resumes with `claude --resume <id>` and no `--agent` override — Claude Code persists whichever agent (if any) that session was started with. `a` opens a picker to resume under a different agent instead, or with none (best effort: there's no documented CLI flag to force-clear an agent from a session that already had one). Read-only tab; `v`/`e`/`c`/`x` do nothing here. The session ID itself is still borrowed from Claude Code (it's just the `.jsonl` filename under `~/.claude/projects/<encoded-project-path>/`, per Claude Code's own docs) — that's the only thing read from its storage.
 
 ## Creating an agent
 
@@ -106,6 +108,8 @@ Falls back to the manual template if `claude` CLI is missing, the `-p` call fail
 - `RELEASE_NOTES.md` — hand-maintained changelog; the TUI's header box reads its first 4 lines on startup. Add an entry here alongside any user-visible change
 - `lib/version.js` — estimates semver from git log conventional-commit prefixes, backs `--version`/`-v` and the header box's version display
 - `lib/detect.js` — detects cwd's stack from manifest files/deps, matches agent name/description against detected keywords, backs the User tab's `recommended agents:` / `others:` split
+- `lib/session-log.js` — agent-wizard's own record of launched/resumed sessions (`~/.claude/agent-wizard/sessions.json`), backs the Sessions tab
+- `lib/sessions.js` — the one bit borrowed from Claude Code's own storage: locates `~/.claude/projects/<encoded-path>/` and recovers a just-launched session's ID from its `.jsonl` filename
 - `install.sh` — macOS/Linux installer (symlinks into a bin dir on `PATH`)
 - `install.ps1` — Windows installer (symlink, or shim fallback without Developer Mode/admin)
 - `add_agent.md` — system prompt for the non-interactive auto-draft path
