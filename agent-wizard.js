@@ -61,6 +61,9 @@ const {
   buildManualTemplate,
   describeClaudeError,
   buildInteractivePrompt,
+  buildTeamFlow,
+  teamDetailFlow,
+  deleteTeamFlow,
 } = require("./lib/actions");
 
 // ---------------------------------------------------------------------------
@@ -92,6 +95,7 @@ async function listLoop() {
     user: 0,
     plugin: 0,
     sessions: 0,
+    teams: 0,
     projectBookmarks: 0,
     projectBookmarkProject: 0,
   };
@@ -100,6 +104,7 @@ async function listLoop() {
     user: 0,
     plugin: 0,
     sessions: 0,
+    teams: 0,
     projectBookmarks: 0,
     projectBookmarkProject: 0,
   };
@@ -128,6 +133,22 @@ async function listLoop() {
     }
     selectedBookmarkRoot = root;
     projectMode = "bookmark-project";
+  }
+
+  // Bundles what the team-builder flows (lib/actions.js) need to resolve
+  // agent candidates and write orchestrator prompts — cwd/cwdAgentsDir/cfg
+  // for buildSearchIndex, imageLogo/spellBase64 for the prompt widgets, and
+  // the current scan `data` so a fresh "create new agent" can target either
+  // project or user scope.
+  function teamCtx(currentData) {
+    return {
+      cwd,
+      cwdAgentsDir: currentProjectAgentsDir(),
+      cfg,
+      imageLogo,
+      spellBase64,
+      data: currentData,
+    };
   }
 
   function jumpToProject(root) {
@@ -247,8 +268,12 @@ async function listLoop() {
           } else if (row.kind === "bookmark") {
             enterBookmarkProject(row.root);
           }
+        } else if (tabKey === "teams") {
+          if (row.kind === "new-team") status = await buildTeamFlow(teamCtx(data));
+          else if (row.kind === "team")
+            status = await teamDetailFlow(row.teamId, teamCtx(data));
         } else if (row.kind === "new") {
-          status = await createFlow(data, tabKey, imageLogo, spellBase64);
+          status = (await createFlow(data, tabKey, imageLogo, spellBase64)).note;
         } else if (!row.virtual) {
           status = runAgentSession(row, activeProjectRoot());
         }
@@ -274,6 +299,11 @@ async function listLoop() {
           ? untrackPluginAgent(cfg, row)
           : await deleteAgent(row);
       }
+    } else if (key.name === "x" && tabKey === "teams") {
+      rows = rowsFor(data, tabKey, projectMode, cfg);
+      const row = rows[selIndex[sKey]];
+      if (row && row.kind === "team")
+        status = await deleteTeamFlow(row.teamId, teamCtx(data));
     } else if (
       key.name === "c" &&
       !(tabKey === "project" && projectMode === "bookmarks")
